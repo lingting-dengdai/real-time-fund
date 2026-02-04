@@ -65,5 +65,15 @@ npm run build
 
 本项目所有数据均来自公开接口，仅供个人学习及参考使用。数据可能存在延迟，不作为任何投资建议。
 
+## 📄 开源协议 (License)
+
+本项目采用 **[GNU Affero General Public License v3.0](https://www.gnu.org/licenses/agpl-3.0.html)**（AGPL-3.0）开源协议。
+
+- **允许**：自由使用、修改、分发本软件；若你通过网络服务向用户提供基于本项目的修改版本，须向该服务的用户提供对应源代码。
+- **要求**：基于本项目衍生或修改的作品需以相同协议开源，并保留版权声明与协议全文。
+- **无担保**：软件按「原样」提供，不提供任何明示或暗示的担保。
+
+完整协议文本见仓库根目录 [LICENSE](./LICENSE) 文件，或 [GNU AGPL v3 官方说明](https://www.gnu.org/licenses/agpl-3.0.html)。
+
 ---
 Made by [hzm](https://github.com/hzm0321)
