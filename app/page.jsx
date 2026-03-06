@@ -1614,6 +1614,7 @@ export default function HomePage() {
       const fields = Array.from(new Set([
         'jzrq',
         'dwjz',
+        'gsz',
         ...(Array.isArray(extraFields) ? extraFields : [])
       ]));
       const items = list.map((item) => {
