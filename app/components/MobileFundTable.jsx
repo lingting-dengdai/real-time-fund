@@ -696,6 +696,7 @@ export default function MobileFundTable({
           const cls = hasProfit ? (value > 0 ? 'up' : value < 0 ? 'down' : '') : 'muted';
           const amountStr = hasProfit ? (info.getValue() ?? '') : '—';
           const percentStr = original.todayProfitPercent ?? '';
+          const isUpdated = original.isUpdated;
           return (
             <div style={{ width: '100%' }}>
               <span className={cls} style={{ display: 'block', width: '100%', fontWeight: 700 }}>
@@ -703,7 +704,7 @@ export default function MobileFundTable({
                   {amountStr}
                 </FitText>
               </span>
-              {percentStr ? (
+              {percentStr && !isUpdated ? (
                 <span className={`${cls} today-profit-percent`} style={{ display: 'block', width: '100%', fontSize: '0.75em', opacity: 0.9, fontWeight: 500 }}>
                   <FitText maxFontSize={11} minFontSize={9}>
                     {percentStr}

@@ -657,12 +657,13 @@ export default function PcFundTable({
           const cls = hasProfit ? (value > 0 ? 'up' : value < 0 ? 'down' : '') : 'muted';
           const amountStr = hasProfit ? (info.getValue() ?? '') : '—';
           const percentStr = original.todayProfitPercent ?? '';
+          const isUpdated = original.isUpdated;
           return (
             <div style={{ width: '100%' }}>
               <FitText className={cls} style={{ fontWeight: 700, display: 'block' }} maxFontSize={14} minFontSize={10}>
                 {amountStr}
               </FitText>
-              {percentStr ? (
+              {percentStr && !isUpdated ? (
                 <span className={`${cls} today-profit-percent`} style={{ display: 'block', fontSize: '0.75em', opacity: 0.9, fontWeight: 500 }}>
                   <FitText maxFontSize={11} minFontSize={9}>
                     {percentStr}
