@@ -3067,9 +3067,6 @@ export default function HomePage() {
       const dataToSync = payload || collectLocalPayload(); // Fallback to full sync if no payload
       const now = nowInTz().toISOString();
 
-      let upsertData = null;
-      let updateError = null;
-
       if (isPartial) {
         // 增量更新：使用 RPC 调用
         const { error: rpcError } = await supabase.rpc('update_user_config_partial', {
@@ -3080,7 +3077,7 @@ export default function HomePage() {
           console.error('增量同步失败，尝试全量同步', rpcError);
           // RPC 失败回退到全量更新
           const fullPayload = collectLocalPayload();
-          const { data, error } = await supabase
+          const { error } = await supabase
             .from('user_configs')
             .upsert(
               {
@@ -3089,17 +3086,12 @@ export default function HomePage() {
                 updated_at: now
               },
               { onConflict: 'user_id' }
-            )
-            .select();
-          upsertData = data;
-          updateError = error;
-        } else {
-          // RPC 成功，模拟 upsertData 格式以便后续逻辑通过
-          upsertData = [{ id: 'rpc_success' }];
+            );
+          if (error) throw error;
         }
       } else {
         // 全量更新
-        const { data, error } = await supabase
+        const { error } = await supabase
           .from('user_configs')
           .upsert(
             {
@@ -3108,15 +3100,8 @@ export default function HomePage() {
               updated_at: now
             },
             { onConflict: 'user_id' }
-          )
-          .select();
-        upsertData = data;
-        updateError = error;
-      }
-
-      if (updateError) throw updateError;
-      if (!upsertData || upsertData.length === 0) {
-        throw new Error('同步失败：未写入任何数据，请检查账号状态或重新登录');
+          );
+        if (error) throw error;
       }
 
       storageHelper.setItem('localUpdatedAt', now);
