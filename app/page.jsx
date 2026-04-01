@@ -65,8 +65,9 @@ import githubImg from "./assets/github.svg";
 import { supabase, isSupabaseConfigured } from './lib/supabase';
 import { toast as sonnerToast } from 'sonner';
 import { recordValuation, getAllValuationSeries, clearFund } from './lib/valuationTimeseries';
+import { getAllDailyEarnings, recordDailyEarnings, clearDailyEarnings } from './lib/dailyEarnings';
 import { loadHolidaysForYears, isTradingDay as isDateTradingDay } from './lib/tradingCalendar';
-import { parseFundTextWithLLM, fetchFundData, fetchLatestRelease, fetchShanghaiIndexDate, fetchSmartFundNetValue, searchFunds } from './api/fund';
+import { parseFundTextWithLLM, fetchFundData, fetchFundNetValue, fetchLatestRelease, fetchShanghaiIndexDate, fetchSmartFundNetValue, searchFunds } from './api/fund';
 import packageJson from '../package.json';
 import PcFundTable from './components/PcFundTable';
 import MobileFundTable from './components/MobileFundTable';
@@ -161,10 +162,13 @@ export default function HomePage() {
 
   // 收起/展开状态
   const [collapsedCodes, setCollapsedCodes] = useState(new Set());
-  const [collapsedTrends, setCollapsedTrends] = useState(new Set()); // New state for collapsed trend charts
+  const [collapsedTrends, setCollapsedTrends] = useState(new Set());
+  const [collapsedEarnings, setCollapsedEarnings] = useState(new Set());
 
   // 估值分时序列（每次调用估值接口记录，用于分时图）
   const [valuationSeries, setValuationSeries] = useState(() => (typeof window !== 'undefined' ? getAllValuationSeries() : {}));
+  // 每日收益序列（有持仓金额的基金才记录，用于“我的收益”折线图；同步云端）
+  const [fundDailyEarnings, setFundDailyEarnings] = useState(() => (typeof window !== 'undefined' ? getAllDailyEarnings() : {}));
 
   // 自选状态
   const [favorites, setFavorites] = useState(new Set());
@@ -904,13 +908,18 @@ export default function HomePage() {
   // 自动滚动选中 Tab 到可视区域
   useEffect(() => {
     if (!tabsRef.current) return;
+    const container = tabsRef.current;
     if (currentTab === 'all') {
-      tabsRef.current.scrollTo({ left: 0, behavior: 'smooth' });
+      container.scrollTo({ left: 0, behavior: 'smooth' });
       return;
     }
-    const activeTab = tabsRef.current.querySelector('.tab.active');
+    const activeTab = container.querySelector('.tab.active');
     if (activeTab) {
-      activeTab.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+      // 手动计算滚动位置，避免 scrollIntoView 导致页面垂直滚动
+      const containerRect = container.getBoundingClientRect();
+      const tabRect = activeTab.getBoundingClientRect();
+      const scrollLeft = container.scrollLeft + (tabRect.left - containerRect.left) - (container.clientWidth / 2) + (tabRect.width / 2);
+      container.scrollTo({ left: Math.max(0, scrollLeft), behavior: 'smooth' });
     }
   }, [currentTab]);
 
@@ -1729,7 +1738,7 @@ export default function HomePage() {
 
   const storageHelper = useMemo(() => {
     // 仅以下 key 参与云端同步；fundValuationTimeseries 不同步到云端（测试中功能，暂不同步）
-    const keys = new Set(['funds', 'favorites', 'groups', 'collapsedCodes', 'collapsedTrends', 'refreshMs', 'holdings', 'pendingTrades', 'transactions', 'dcaPlans', 'customSettings']);
+    const keys = new Set(['funds', 'favorites', 'groups', 'collapsedCodes', 'collapsedTrends', 'collapsedEarnings', 'refreshMs', 'holdings', 'pendingTrades', 'transactions', 'dcaPlans', 'customSettings', 'fundDailyEarnings']);
     const triggerSync = (key, prevValue, nextValue) => {
       if (keys.has(key)) {
         // 标记为脏数据
@@ -1778,7 +1787,7 @@ export default function HomePage() {
 
   useEffect(() => {
     // 仅以下 key 的变更会触发云端同步；fundValuationTimeseries 不在其中
-    const keys = new Set(['funds', 'favorites', 'groups', 'collapsedCodes', 'collapsedTrends', 'refreshMs', 'holdings', 'pendingTrades', 'dcaPlans', 'customSettings']);
+    const keys = new Set(['funds', 'favorites', 'groups', 'collapsedCodes', 'collapsedTrends', 'collapsedEarnings', 'refreshMs', 'holdings', 'pendingTrades', 'dcaPlans', 'customSettings', 'fundDailyEarnings']);
     const onStorage = (e) => {
       if (!e.key) return;
       if (e.key === 'localUpdatedAt') {
@@ -1857,6 +1866,19 @@ export default function HomePage() {
         next.add(code);
       }
       storageHelper.setItem('collapsedTrends', JSON.stringify(Array.from(next)));
+      return next;
+    });
+  };
+
+  const toggleEarningsCollapse = (code) => {
+    setCollapsedEarnings(prev => {
+      const next = new Set(prev);
+      if (next.has(code)) {
+        next.delete(code);
+      } else {
+        next.add(code);
+      }
+      storageHelper.setItem('collapsedEarnings', JSON.stringify(Array.from(next)));
       return next;
     });
   };
@@ -2179,6 +2201,11 @@ export default function HomePage() {
       if (Array.isArray(savedTrends)) {
         setCollapsedTrends(new Set(savedTrends));
       }
+      // 加载我的收益收起状态
+      const savedEarnings = JSON.parse(localStorage.getItem('collapsedEarnings') || '[]');
+      if (Array.isArray(savedEarnings)) {
+        setCollapsedEarnings(new Set(savedEarnings));
+      }
       // 加载估值分时记录（用于分时图）
       setValuationSeries(getAllValuationSeries());
       // 加载自选状态：只保留存在于 funds 中的 code，避免“自选数量 > 全部数量”
@@ -2241,6 +2268,12 @@ export default function HomePage() {
     init();
     return () => { cancelled = true; };
   }, [isSupabaseConfigured]);
+
+  // 切换分组后，页面自动回到顶部（跳过首次初始化恢复）
+  useEffect(() => {
+    if (!hasLocalTabInitRef.current) return;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [currentTab]);
 
   // 记录用户当前选择的分组（仅本地存储，不同步云端）
   useEffect(() => {
@@ -2706,6 +2739,171 @@ export default function HomePage() {
         if (Object.keys(nextSeries).length > 0) {
           setValuationSeries(prev => ({ ...prev, ...nextSeries }));
         }
+
+        // 记录/补齐每日收益（仅对有持仓的基金）
+        try {
+          let changed = false;
+          const nextDailyMap = { ...(isPlainObject(fundDailyEarnings) ? fundDailyEarnings : {}) };
+          const isValidDateStr = (s) => isString(s) && /^\d{4}-\d{2}-\d{2}$/.test(s);
+          const addDays = (dateStr, days) => dayjs.tz(dateStr, TZ).add(days, 'day').format('YYYY-MM-DD');
+          const subDays = (dateStr, days) => dayjs.tz(dateStr, TZ).subtract(days, 'day').format('YYYY-MM-DD');
+
+          const calcEarningsFromNavs = (nav, prevNav, share) => (nav - prevNav) * share;
+          const calcRateFromNavs = (nav, prevNav) => {
+            if (!Number.isFinite(nav) || !Number.isFinite(prevNav) || prevNav <= 0) return null;
+            return ((nav - prevNav) / prevNav) * 100;
+          };
+
+          const calcLatestDayFromFund = (u, share) => {
+            const nav = Number(u?.dwjz);
+            if (!Number.isFinite(nav) || nav <= 0) return null;
+            const lastNav = u?.lastNav != null && u.lastNav !== '' ? Number(u.lastNav) : null;
+            if (lastNav != null && Number.isFinite(lastNav) && lastNav > 0) {
+              return {
+                earnings: calcEarningsFromNavs(nav, lastNav, share),
+                rate: calcRateFromNavs(nav, lastNav),
+              };
+            }
+            const zzl = u?.zzl != null && u.zzl !== '' ? Number(u.zzl) : Number.NaN;
+            if (Number.isFinite(zzl)) {
+              const prev = nav / (1 + zzl / 100);
+              if (Number.isFinite(prev) && prev > 0) {
+                return {
+                  earnings: calcEarningsFromNavs(nav, prev, share),
+                  rate: zzl,
+                };
+              }
+            }
+            return null;
+          };
+
+          const findPrevTradingNav = async (code, dateStr, navCache, u) => {
+            // 优先：如果目标日期就是基金最新净值日，且 fund 带 lastNav，则直接用 lastNav（避免额外请求）
+            if (u && isValidDateStr(u.jzrq) && u.jzrq === dateStr) {
+              const lastNav = u?.lastNav != null && u.lastNav !== '' ? Number(u.lastNav) : null;
+              if (lastNav != null && Number.isFinite(lastNav) && lastNav > 0) return lastNav;
+            }
+            // 向前回溯查找上一交易日净值（最多回溯 30 天，覆盖长假）
+            for (let i = 1; i <= 30; i++) {
+              const prevDate = subDays(dateStr, i);
+              if (!isDateTradingDay(prevDate)) continue;
+              if (navCache.has(prevDate)) return navCache.get(prevDate);
+              const prevNav = await fetchFundNetValue(code, prevDate);
+              if (Number.isFinite(prevNav) && prevNav > 0) {
+                navCache.set(prevDate, prevNav);
+                return prevNav;
+              }
+            }
+            return null;
+          };
+
+          for (const u of updated) {
+            const code = u?.code;
+            if (!code) continue;
+            const h = holdings?.[code];
+            const share = h?.share;
+            // 规则 1：基金存在持仓数据（只要求份额有效）
+            if (!isNumber(share) || share <= 0) continue;
+
+            const latestNavDate = u?.jzrq;
+            // 只在“最新净值日期”明确存在时计算每日收益
+            if (!isValidDateStr(latestNavDate)) continue;
+
+            const existing = Array.isArray(nextDailyMap[code]) ? nextDailyMap[code] : [];
+            const lastRecordedDate = existing.length ? existing[existing.length - 1]?.date : null;
+
+            // 规则 3：如果每日收益没有任何一条数据，则仅需记录最新的净值的收益数据
+            if (!existing.length) {
+              const v = calcLatestDayFromFund(u, share);
+              if (v && Number.isFinite(v.earnings)) {
+                const list = recordDailyEarnings(code, v.earnings, latestNavDate, v.rate);
+                nextDailyMap[code] = list;
+                changed = true;
+              }
+              // 若 fund 本身缺少 lastNav/zzl，尝试用接口回查上一交易日净值补一条
+              if (!changed || !Array.isArray(nextDailyMap[code]) || nextDailyMap[code].length === 0) {
+                try {
+                  const nav = Number(u?.dwjz);
+                  if (Number.isFinite(nav) && nav > 0) {
+                    const navCache = new Map([[latestNavDate, nav]]);
+                    const prevNav = await findPrevTradingNav(code, latestNavDate, navCache, u);
+                    if (Number.isFinite(prevNav) && prevNav > 0) {
+                      const earnings = calcEarningsFromNavs(nav, prevNav, share);
+                      const rate = calcRateFromNavs(nav, prevNav);
+                      if (Number.isFinite(earnings)) {
+                        const list = recordDailyEarnings(code, earnings, latestNavDate, rate);
+                        nextDailyMap[code] = list;
+                        changed = true;
+                      }
+                    }
+                  }
+                } catch {
+                  // ignore
+                }
+              }
+              continue;
+            }
+
+            // 规则 2：如果每日收益最后一条日期数据小于基金最新净值，则需要遍历补齐
+            if (!isValidDateStr(lastRecordedDate) || lastRecordedDate >= latestNavDate) continue;
+
+            const navCache = new Map();
+            // 复用 fund 的最新净值，减少请求
+            const latestNav = Number(u?.dwjz);
+            if (Number.isFinite(latestNav) && latestNav > 0) navCache.set(latestNavDate, latestNav);
+
+            let prevNav = null;
+            const start = addDays(lastRecordedDate, 1);
+            let cursor = start;
+            let guard = 0;
+            while (cursor <= latestNavDate) {
+              guard++;
+              if (guard > 370) break; // 保护：最多补 370 个自然日，避免异常情况下卡死
+
+              // 只在交易日尝试补齐，非交易日直接跳过
+              if (!isDateTradingDay(cursor)) {
+                cursor = addDays(cursor, 1);
+                continue;
+              }
+
+              let nav = navCache.has(cursor) ? navCache.get(cursor) : null;
+              if (nav == null) {
+                nav = await fetchFundNetValue(code, cursor);
+                if (Number.isFinite(nav) && nav > 0) navCache.set(cursor, nav);
+              }
+              if (!Number.isFinite(nav) || nav <= 0) {
+                cursor = addDays(cursor, 1);
+                continue;
+              }
+
+              if (prevNav == null) {
+                prevNav = await findPrevTradingNav(code, cursor, navCache, u);
+              }
+              if (!Number.isFinite(prevNav) || prevNav <= 0) {
+                cursor = addDays(cursor, 1);
+                continue;
+              }
+
+              const earnings = calcEarningsFromNavs(nav, prevNav, share);
+              const rate = calcRateFromNavs(nav, prevNav);
+              if (Number.isFinite(earnings)) {
+                const list = recordDailyEarnings(code, earnings, cursor, rate);
+                nextDailyMap[code] = list;
+                changed = true;
+              }
+
+              prevNav = nav;
+              cursor = addDays(cursor, 1);
+            }
+          }
+          if (changed) {
+            setFundDailyEarnings(nextDailyMap);
+            const raw = localStorage.getItem('fundDailyEarnings') || '{}';
+            storageHelper.setItem('fundDailyEarnings', raw);
+          }
+        } catch (e) {
+          console.warn('记录每日收益失败', e);
+        }
       }
     } catch (e) {
       console.error(e);
@@ -2807,6 +3005,15 @@ export default function HomePage() {
       return nextSet;
     });
 
+    // 同步删除我的收益收起状态
+    setCollapsedEarnings(prev => {
+      if (!prev.has(removeCode)) return prev;
+      const nextSet = new Set(prev);
+      nextSet.delete(removeCode);
+      storageHelper.setItem('collapsedEarnings', JSON.stringify(Array.from(nextSet)));
+      return nextSet;
+    });
+
     // 同步删除自选状态
     setFavorites(prev => {
       if (!prev.has(removeCode)) return prev;
@@ -2850,6 +3057,19 @@ export default function HomePage() {
       delete next[removeCode];
       return next;
     });
+
+    // 同步删除该基金的每日收益数据
+    try {
+      clearDailyEarnings(removeCode);
+      setFundDailyEarnings(prev => {
+        if (!prev || !(removeCode in prev)) return prev;
+        const next = { ...prev };
+        delete next[removeCode];
+        return next;
+      });
+      const raw = localStorage.getItem('fundDailyEarnings') || '{}';
+      storageHelper.setItem('fundDailyEarnings', raw);
+    } catch { }
 
     // 同步删除该基金的定投计划
     setDcaPlans(prev => {
@@ -2965,6 +3185,10 @@ export default function HomePage() {
       ? Array.from(new Set(payload.collapsedTrends.map(normalizeCode).filter((code) => uniqueFundCodes.includes(code)))).sort()
       : [];
 
+    const collapsedEarnings = Array.isArray(payload.collapsedEarnings)
+      ? Array.from(new Set(payload.collapsedEarnings.map(normalizeCode).filter((code) => uniqueFundCodes.includes(code)))).sort()
+      : [];
+
     const groups = Array.isArray(payload.groups)
       ? payload.groups
           .map((group) => {
@@ -3076,6 +3300,18 @@ export default function HomePage() {
       });
 
     const customSettings = isPlainObject(payload.customSettings) ? payload.customSettings : {};
+    const fundDailyEarningsSource = isPlainObject(payload.fundDailyEarnings) ? payload.fundDailyEarnings : {};
+    const fundDailyEarningsSig = Object.keys(fundDailyEarningsSource)
+      .map(normalizeCode)
+      .filter((code) => uniqueFundCodes.includes(code))
+      .sort()
+      .map((code) => {
+        const list = Array.isArray(fundDailyEarningsSource[code]) ? fundDailyEarningsSource[code] : [];
+        const last = list.length ? list[list.length - 1] : null;
+        const date = last?.date ? String(last.date) : '';
+        const earnings = Number(last?.earnings);
+        return `${code}|${date}|${Number.isFinite(earnings) ? earnings.toFixed(2) : ''}|${list.length}`;
+      });
 
     return JSON.stringify({
       funds: uniqueFundCodes,
@@ -3088,7 +3324,8 @@ export default function HomePage() {
       pendingTrades,
       transactions,
       dcaPlans,
-      customSettings
+      customSettings,
+      fundDailyEarningsSig
     });
   }
 
@@ -3131,6 +3368,13 @@ export default function HomePage() {
           all.customSettings = JSON.parse(localStorage.getItem('customSettings') || '{}');
         } catch {
           all.customSettings = {};
+        }
+      }
+      if (!keys || keys.has('fundDailyEarnings')) {
+        try {
+          all.fundDailyEarnings = JSON.parse(localStorage.getItem('fundDailyEarnings') || '{}');
+        } catch {
+          all.fundDailyEarnings = {};
         }
       }
 
@@ -3176,6 +3420,9 @@ export default function HomePage() {
         const cleanedCollapsedTrends = Array.isArray(all.collapsedTrends)
           ? all.collapsedTrends.filter((code) => fundCodes.has(code))
           : [];
+        const cleanedCollapsedEarnings = Array.isArray(all.collapsedEarnings)
+          ? all.collapsedEarnings.filter((code) => fundCodes.has(code))
+          : [];
         const cleanedGroups = Array.isArray(all.groups)
           ? all.groups.map(g => ({
               ...g,
@@ -3191,18 +3438,47 @@ export default function HomePage() {
             }, {})
           : {};
 
+        const cleanedFundDailyEarnings = isPlainObject(all.fundDailyEarnings)
+          ? Object.entries(all.fundDailyEarnings).reduce((acc, [code, list]) => {
+              if (!fundCodes.has(code) || !Array.isArray(list)) return acc;
+              const normalized = list
+                .map((item) => {
+                  const date = item?.date ? String(item.date) : '';
+                  const earnings = Number(item?.earnings);
+                  const rateRaw = item?.rate;
+                  const rate = rateRaw === null || rateRaw === undefined || rateRaw === ''
+                    ? null
+                    : Number(rateRaw);
+                  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+                  if (!Number.isFinite(earnings)) return null;
+                  return {
+                    date,
+                    earnings,
+                    ...(Number.isFinite(rate) ? { rate } : { rate: null }),
+                  };
+                })
+                .filter(Boolean)
+                .sort((a, b) => a.date.localeCompare(b.date));
+              if (normalized.length === 0) return acc;
+              acc[code] = normalized;
+              return acc;
+            }, {})
+          : {};
+
         return {
           funds: all.funds,
           favorites: cleanedFavorites,
           groups: cleanedGroups,
           collapsedCodes: cleanedCollapsed,
           collapsedTrends: cleanedCollapsedTrends,
+          collapsedEarnings: cleanedCollapsedEarnings,
           refreshMs: all.refreshMs,
           holdings: cleanedHoldings,
           pendingTrades: all.pendingTrades,
           transactions: all.transactions,
           dcaPlans: cleanedDcaPlans,
-          customSettings: isPlainObject(all.customSettings) ? all.customSettings : {}
+          customSettings: isPlainObject(all.customSettings) ? all.customSettings : {},
+          fundDailyEarnings: cleanedFundDailyEarnings
         };
       }
 
@@ -3217,6 +3493,7 @@ export default function HomePage() {
         groups: [],
         collapsedCodes: [],
         collapsedTrends: [],
+        collapsedEarnings: [],
         refreshMs: 30000,
         holdings: {},
         pendingTrades: [],
@@ -3280,6 +3557,34 @@ export default function HomePage() {
       }, {});
       setDcaPlans(nextDcaPlans);
       storageHelper.setItem('dcaPlans', JSON.stringify(nextDcaPlans));
+
+      const cloudDaily = isPlainObject(cloudData.fundDailyEarnings) ? cloudData.fundDailyEarnings : {};
+      const nextFundDailyEarnings = Object.entries(cloudDaily).reduce((acc, [code, list]) => {
+        if (!nextFundCodes.has(code) || !Array.isArray(list)) return acc;
+        const normalized = list
+          .map((item) => {
+            const date = item?.date ? String(item.date) : '';
+            const earnings = Number(item?.earnings);
+            const rateRaw = item?.rate;
+            const rate = rateRaw === null || rateRaw === undefined || rateRaw === ''
+              ? null
+              : Number(rateRaw);
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+            if (!Number.isFinite(earnings)) return null;
+            return {
+              date,
+              earnings,
+              ...(Number.isFinite(rate) ? { rate } : { rate: null }),
+            };
+          })
+          .filter(Boolean)
+          .sort((a, b) => a.date.localeCompare(b.date));
+        if (normalized.length === 0) return acc;
+        acc[code] = normalized;
+        return acc;
+      }, {});
+      setFundDailyEarnings(nextFundDailyEarnings);
+      storageHelper.setItem('fundDailyEarnings', JSON.stringify(nextFundDailyEarnings));
 
       if (isPlainObject(cloudData.customSettings)) {
         try {
@@ -3492,6 +3797,7 @@ export default function HomePage() {
         const currentGroups = JSON.parse(localStorage.getItem('groups') || '[]');
         const currentCollapsed = JSON.parse(localStorage.getItem('collapsedCodes') || '[]');
         const currentTrends = JSON.parse(localStorage.getItem('collapsedTrends') || '[]');
+        const currentEarnings = JSON.parse(localStorage.getItem('collapsedEarnings') || '[]');
         const currentPendingTrades = JSON.parse(localStorage.getItem('pendingTrades') || '[]');
         const currentDcaPlans = JSON.parse(localStorage.getItem('dcaPlans') || '{}');
 
@@ -3543,6 +3849,12 @@ export default function HomePage() {
           const mergedTrends = Array.from(new Set([...currentTrends, ...data.collapsedTrends]));
           setCollapsedTrends(new Set(mergedTrends));
           storageHelper.setItem('collapsedTrends', JSON.stringify(mergedTrends));
+        }
+
+        if (Array.isArray(data.collapsedEarnings)) {
+          const mergedEarnings = Array.from(new Set([...currentEarnings, ...data.collapsedEarnings]));
+          setCollapsedEarnings(new Set(mergedEarnings));
+          storageHelper.setItem('collapsedEarnings', JSON.stringify(mergedEarnings));
         }
 
         if (isNumber(data.refreshMs) && data.refreshMs >= 5000) {
@@ -4375,12 +4687,13 @@ export default function HomePage() {
                                     favorites,
                                     dcaPlans,
                                     holdings,
-                            percentModes,
-                            todayPercentModes,
+                                    percentModes,
                                     todayPercentModes,
+                                    fundDailyEarnings,
                                     valuationSeries,
                                     collapsedCodes,
                                     collapsedTrends,
+                                    collapsedEarnings,
                                     transactions,
                                     theme,
                                     isTradingDay,
@@ -4397,6 +4710,7 @@ export default function HomePage() {
                                       setTodayPercentModes((prev) => ({ ...prev, [code]: !prev[code] })),
                                     onToggleCollapse: toggleCollapse,
                                     onToggleTrendCollapse: toggleTrendCollapse,
+                                    onToggleEarningsCollapse: toggleEarningsCollapse,
                                     masked: maskAmounts,
                                     layoutMode: 'drawer',
                                   };
@@ -4456,6 +4770,8 @@ export default function HomePage() {
                             dcaPlans,
                             holdings,
                             percentModes,
+                            todayPercentModes,
+                            fundDailyEarnings,
                             valuationSeries,
                             collapsedCodes,
                             collapsedTrends,
@@ -4503,9 +4819,11 @@ export default function HomePage() {
                               holdings={holdings}
                               percentModes={percentModes}
                               todayPercentModes={todayPercentModes}
+                              fundDailyEarnings={fundDailyEarnings}
                               valuationSeries={valuationSeries}
                               collapsedCodes={collapsedCodes}
                               collapsedTrends={collapsedTrends}
+                              collapsedEarnings={collapsedEarnings}
                               transactions={transactions}
                               theme={theme}
                               isTradingDay={isTradingDay}
@@ -4524,6 +4842,7 @@ export default function HomePage() {
                               }
                               onToggleCollapse={toggleCollapse}
                               onToggleTrendCollapse={toggleTrendCollapse}
+                              onToggleEarningsCollapse={toggleEarningsCollapse}
                               masked={maskAmounts}
                             />
                         </motion.div>

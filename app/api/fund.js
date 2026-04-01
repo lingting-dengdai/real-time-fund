@@ -206,34 +206,9 @@ const isLastQuarterReport = (reportDateStr) => {
   if (!report.isValid()) return false;
 
   const now = nowInTz();
-  const m = now.month(); // 0-11
-  const q = Math.floor(m / 3); // 当前季度 0-3 => Q1-Q4
-
-  let lastQ;
-  let year;
-  if (q === 0) {
-    // 当前为 Q1，则上一季度是上一年的 Q4
-    lastQ = 3;
-    year = now.year() - 1;
-  } else {
-    lastQ = q - 1;
-    year = now.year();
-  }
-
-  const quarterEnds = [
-    { month: 2, day: 31 }, // Q1 -> 03-31
-    { month: 5, day: 30 }, // Q2 -> 06-30
-    { month: 8, day: 30 }, // Q3 -> 09-30
-    { month: 11, day: 31 } // Q4 -> 12-31
-  ];
-
-  const { month: endMonth, day: endDay } = quarterEnds[lastQ];
-  const lastQuarterEnd = dayjs(
-    `${year}-${String(endMonth + 1).padStart(2, '0')}-${endDay}`,
-    'YYYY-MM-DD'
-  );
-
-  return report.isSame(lastQuarterEnd, 'day');
+  // 允许最近 6 个月内的报告（覆盖上一季度 + 上上季度，兼容披露延迟）
+  const sixMonthsAgo = now.subtract(6, 'month');
+  return report.isAfter(sixMonthsAgo) && report.isBefore(now.add(7, 'day'));
 };
 
 export const fetchSmartFundNetValue = async (code, startDate) => {
