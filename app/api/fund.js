@@ -235,6 +235,35 @@ const parseLatestNetValueFromLsjzContent = (content) => {
  * 解析历史净值数据（支持多条记录）
  * 返回按日期升序排列的净值数组
  */
+/**
+ * 根据 lsjz 升序净值列表推算「上一完整交易日」相对再前一日的涨跌幅与每份净值差（用于昨日收益）
+ */
+const computeYesterdayNavMetricsFromList = (navList) => {
+  const out = { yesterdayZzl: null, yesterdayNavDelta: null };
+  try {
+    const len = navList.length;
+    if (len < 2) return out;
+    const rowPrev = navList[len - 2];
+    out.yesterdayZzl = Number.isFinite(rowPrev?.growth) ? rowPrev.growth : null;
+    if (len >= 3) {
+      const navP = navList[len - 2].nav;
+      const navPP = navList[len - 3].nav;
+      if (Number.isFinite(navP) && Number.isFinite(navPP)) {
+        out.yesterdayNavDelta = navP - navPP;
+      }
+    } else if (len === 2) {
+      const r0 = navList[0];
+      const g = r0.growth;
+      if (Number.isFinite(g) && Number.isFinite(r0.nav)) {
+        out.yesterdayNavDelta = r0.nav - r0.nav / (1 + g / 100);
+      }
+    }
+  } catch {
+    return out;
+  }
+  return out;
+};
+
 const parseNetValuesFromLsjzContent = (content) => {
   if (!content || content.includes('暂无数据')) return [];
   const rowMatches = content.match(/<tr[\s\S]*?<\/tr>/gi) || [];
@@ -383,12 +412,13 @@ export const fetchFundDataFallback = async (c) => {
     }
     try {
       // fallback 同样取最近两天净值，以补齐 lastNav（用于更精确的当日收益计算）
-      const url = `https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code=${c}&page=1&per=2&sdate=&edate=`;
+      const url = `https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code=${c}&page=1&per=3&sdate=&edate=`;
       const apidata = await loadScript(url);
       const content = apidata?.content || '';
       const navList = parseNetValuesFromLsjzContent(content);
       const latest = navList.length > 0 ? navList[navList.length - 1] : null;
       const previousNav = navList.length > 1 ? navList[navList.length - 2] : null;
+      const yM = computeYesterdayNavMetricsFromList(navList);
       if (latest && latest.nav) {
         const name = fundName || `未知基金(${c})`;
         resolve({
@@ -401,6 +431,8 @@ export const fetchFundDataFallback = async (c) => {
           jzrq: latest.date,
           gszzl: null,
           zzl: Number.isFinite(latest.growth) ? latest.growth : null,
+          yesterdayZzl: yM.yesterdayZzl,
+          yesterdayNavDelta: yM.yesterdayNavDelta,
           noValuation: true,
           holdings: [],
           holdingsReportDate: null,
@@ -441,7 +473,7 @@ export const fetchFundData = async (c) => {
         gszzl: Number.isFinite(gszzlNum) ? gszzlNum : json.gszzl
       };
       const lsjzPromise = new Promise((resolveT) => {
-        const url = `https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code=${c}&page=1&per=2&sdate=&edate=`;
+        const url = `https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code=${c}&page=1&per=3&sdate=&edate=`;
         loadScript(url)
           .then((apidata) => {
             const content = apidata?.content || '';
@@ -449,11 +481,14 @@ export const fetchFundData = async (c) => {
             if (navList.length > 0) {
               const latest = navList[navList.length - 1];
               const previousNav = navList.length > 1 ? navList[navList.length - 2] : null;
+              const yM = computeYesterdayNavMetricsFromList(navList);
               resolveT({
                 dwjz: String(latest.nav),
                 zzl: Number.isFinite(latest.growth) ? latest.growth : null,
                 jzrq: latest.date,
-                lastNav: previousNav ? String(previousNav.nav) : null
+                lastNav: previousNav ? String(previousNav.nav) : null,
+                yesterdayZzl: yM.yesterdayZzl,
+                yesterdayNavDelta: yM.yesterdayNavDelta,
               });
             } else {
               resolveT(null);
@@ -635,6 +670,12 @@ export const fetchFundData = async (c) => {
             gzData.jzrq = tData.jzrq;
             gzData.zzl = tData.zzl;
             gzData.lastNav = tData.lastNav;
+          }
+          if (Object.prototype.hasOwnProperty.call(tData, 'yesterdayZzl')) {
+            gzData.yesterdayZzl = tData.yesterdayZzl;
+          }
+          if (Object.prototype.hasOwnProperty.call(tData, 'yesterdayNavDelta')) {
+            gzData.yesterdayNavDelta = tData.yesterdayNavDelta;
           }
         }
         resolve({
@@ -955,6 +996,59 @@ export const fetchFundPingzhongdata = async (fundCode, { cacheTime = 60 * 60 * 1
     throw e;
   }
 };
+
+function parsePingzhongSylNumber(raw) {
+  if (raw == null || raw === '') return null;
+  const n = Number(String(raw).replace(/%/g, '').trim());
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * 用净值走势估算「近一周」涨跌幅：最新净值相对约 7 个自然日前最近一条净值。
+ * pingzhongdata 另提供 syl_6y（近六月）等；近周无独立字段，由走势推算。
+ */
+export function computeWeekReturnFromNetWorthTrend(trend) {
+  if (!Array.isArray(trend) || trend.length < 2) return null;
+  const valid = trend
+    .filter((d) => d && typeof d.x === 'number' && Number.isFinite(Number(d.y)))
+    .sort((a, b) => a.x - b.x);
+  if (valid.length < 2) return null;
+  const latest = valid[valid.length - 1];
+  const latestMs = latest.x;
+  const latestNav = Number(latest.y);
+  if (!Number.isFinite(latestNav) || latestNav === 0) return null;
+  const cutoff = latestMs - 7 * 24 * 60 * 60 * 1000;
+  let before = null;
+  for (const d of valid) {
+    if (d.x <= cutoff) before = d;
+    else break;
+  }
+  if (!before) before = valid[0];
+  const firstNav = Number(before.y);
+  if (!Number.isFinite(firstNav) || firstNav === 0) return null;
+  return ((latestNav - firstNav) / firstNav) * 100;
+}
+
+/**
+ * 基金阶段涨跌幅（东方财富 pingzhongdata：近一月/三月/六月/一年为接口字段；近一周由净值走势推算）
+ * @returns {Promise<{ week: number|null, month: number|null, month3: number|null, month6: number|null, year1: number|null }>}
+ */
+export async function fetchFundPeriodReturns(fundCode, { cacheTime = 60 * 60 * 1000 } = {}) {
+  const empty = { week: null, month: null, month3: null, month6: null, year1: null };
+  if (!fundCode) return empty;
+  try {
+    const pz = await fetchFundPingzhongdata(fundCode, { cacheTime });
+    return {
+      week: computeWeekReturnFromNetWorthTrend(pz?.Data_netWorthTrend),
+      month: parsePingzhongSylNumber(pz?.syl_1y),
+      month3: parsePingzhongSylNumber(pz?.syl_3y),
+      month6: parsePingzhongSylNumber(pz?.syl_6y),
+      year1: parsePingzhongSylNumber(pz?.syl_1n),
+    };
+  } catch {
+    return empty;
+  }
+}
 
 export const fetchFundHistory = async (code, range = '1m') => {
   if (typeof window === 'undefined') return [];

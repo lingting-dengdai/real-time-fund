@@ -29,28 +29,40 @@ import MobileFundCardDrawer from './MobileFundCardDrawer';
 import MobileSettingModal from './MobileSettingModal';
 import ConfirmModal from './ConfirmModal';
 import { CloseIcon, DragIcon, SettingsIcon, SortIcon, StarIcon, TrashIcon } from './Icons';
-import { fetchRelatedSectors, fetchRelatedSectorLiveQuote } from '@/app/api/fund';
+import { fetchFundPeriodReturns, fetchRelatedSectors, fetchRelatedSectorLiveQuote } from '@/app/api/fund';
 
 const MOBILE_NON_FROZEN_COLUMN_IDS = [
   'relatedSector',
+  'period1w',
+  'period1m',
+  'period3m',
+  'period6m',
+  'period1y',
   'yesterdayChangePercent',
   'estimateChangePercent',
   'totalChangePercent',
   'holdingDays',
   'todayProfit',
+  'yesterdayProfit',
   'holdingProfit',
   'latestNav',
   'estimateNav',
 ];
 const MOBILE_COLUMN_HEADERS = {
   relatedSector: '关联板块',
+  period1w: '近1周',
+  period1m: '近1月',
+  period3m: '近3月',
+  period6m: '近6月',
+  period1y: '近1年',
   latestNav: '最新净值',
   estimateNav: '估算净值',
-  yesterdayChangePercent: '昨日涨幅',
+  yesterdayChangePercent: '最新涨幅',
   estimateChangePercent: '估值涨幅',
   totalChangePercent: '估算收益',
   holdingDays: '持有天数',
   todayProfit: '当日收益',
+  yesterdayProfit: '昨日收益',
   holdingProfit: '持有收益',
 };
 
@@ -270,6 +282,12 @@ export default function MobileFundTable({
     // 新增列：默认隐藏（用户可在表格设置中开启）
     o.relatedSector = false;
     o.holdingDays = false;
+    o.period1w = false;
+    o.period1m = false;
+    o.period3m = false;
+    o.period6m = false;
+    o.period1y = false;
+    o.yesterdayProfit = false;
     return o;
   })();
 
@@ -286,6 +304,12 @@ export default function MobileFundTable({
       const next = { ...vis };
       if (next.relatedSector === undefined) next.relatedSector = false;
       if (next.holdingDays === undefined) next.holdingDays = false;
+      if (next.period1w === undefined) next.period1w = false;
+      if (next.period1m === undefined) next.period1m = false;
+      if (next.period3m === undefined) next.period3m = false;
+      if (next.period6m === undefined) next.period6m = false;
+      if (next.period1y === undefined) next.period1y = false;
+      if (next.yesterdayProfit === undefined) next.yesterdayProfit = false;
       return next;
     }
     return defaultVisibility;
@@ -502,6 +526,11 @@ export default function MobileFundTable({
   const FALLBACK_WIDTHS = {
     fundName: 140,
     relatedSector: 120,
+    period1w: 72,
+    period1m: 72,
+    period3m: 72,
+    period6m: 72,
+    period1y: 72,
     latestNav: 64,
     estimateNav: 64,
     yesterdayChangePercent: 72,
@@ -509,6 +538,7 @@ export default function MobileFundTable({
     totalChangePercent: 80,
     holdingDays: 64,
     todayProfit: 80,
+    yesterdayProfit: 80,
     holdingProfit: 80,
   };
 
@@ -605,6 +635,49 @@ export default function MobileFundTable({
     return () => { cancelled = true; };
   }, [relatedSectorEnabled, data, relatedSectorByCode]);
 
+  const periodReturnsEnabled =
+    mobileColumnVisibility?.period1w !== false
+    || mobileColumnVisibility?.period1m !== false
+    || mobileColumnVisibility?.period3m !== false
+    || mobileColumnVisibility?.period6m !== false
+    || mobileColumnVisibility?.period1y !== false;
+  const periodReturnsCacheRef = useRef(new Map());
+  const [periodReturnsByCode, setPeriodReturnsByCode] = useState({});
+
+  useEffect(() => {
+    if (!periodReturnsEnabled) return;
+    if (!Array.isArray(data) || data.length === 0) return;
+
+    const codes = Array.from(new Set(data.map((d) => d?.code).filter(Boolean)));
+    const missing = codes.filter((code) => !periodReturnsCacheRef.current.has(code));
+    if (missing.length === 0) return;
+
+    let cancelled = false;
+    (async () => {
+      await runWithConcurrency(missing, 4, async (code) => {
+        const value = await fetchFundPeriodReturns(code);
+        periodReturnsCacheRef.current.set(code, value);
+        if (cancelled) return;
+        setPeriodReturnsByCode((prev) => {
+          const prevVal = prev[code];
+          if (
+            prevVal
+            && prevVal.week === value.week
+            && prevVal.month === value.month
+            && prevVal.month3 === value.month3
+            && prevVal.month6 === value.month6
+            && prevVal.year1 === value.year1
+          ) {
+            return prev;
+          }
+          return { ...prev, [code]: value };
+        });
+      });
+    })();
+
+    return () => { cancelled = true; };
+  }, [periodReturnsEnabled, data]);
+
   const columnWidthMap = useMemo(() => {
     const visibleNonNameIds = mobileColumnOrder.filter((id) => mobileColumnVisibility[id] !== false);
     const nonNameCount = visibleNonNameIds.length;
@@ -632,6 +705,12 @@ export default function MobileFundTable({
     });
     allVisible.relatedSector = false;
     allVisible.holdingDays = false;
+    allVisible.period1w = false;
+    allVisible.period1m = false;
+    allVisible.period3m = false;
+    allVisible.period6m = false;
+    allVisible.period1y = false;
+    allVisible.yesterdayProfit = false;
     setMobileColumnVisibility(allVisible);
   };
   const handleToggleMobileColumnVisibility = (columnId, visible) => {
@@ -1033,6 +1112,101 @@ export default function MobileFundTable({
         meta: { align: 'right', cellClassName: 'related-sector-cell', width: columnWidthMap.relatedSector ?? 120 },
       },
       {
+        id: 'period1w',
+        header: '近1周',
+        cell: (info) => {
+          const original = info.row.original || {};
+          const code = original.code;
+          const value = code ? periodReturnsByCode[code]?.week : null;
+          const cls = value > 0 ? 'up' : value < 0 ? 'down' : '';
+          const text = value != null && Number.isFinite(value)
+            ? `${value > 0 ? '+' : ''}${value.toFixed(2)}%`
+            : '—';
+          return (
+            <div style={{ textAlign: 'right' }}>
+              <span className={cls} style={{ fontWeight: 700 }}>{text}</span>
+            </div>
+          );
+        },
+        meta: { align: 'right', cellClassName: 'period-return-cell', width: columnWidthMap.period1w ?? 72 },
+      },
+      {
+        id: 'period1m',
+        header: '近1月',
+        cell: (info) => {
+          const original = info.row.original || {};
+          const code = original.code;
+          const value = code ? periodReturnsByCode[code]?.month : null;
+          const cls = value > 0 ? 'up' : value < 0 ? 'down' : '';
+          const text = value != null && Number.isFinite(value)
+            ? `${value > 0 ? '+' : ''}${value.toFixed(2)}%`
+            : '—';
+          return (
+            <div style={{ textAlign: 'right' }}>
+              <span className={cls} style={{ fontWeight: 700 }}>{text}</span>
+            </div>
+          );
+        },
+        meta: { align: 'right', cellClassName: 'period-return-cell', width: columnWidthMap.period1m ?? 72 },
+      },
+      {
+        id: 'period3m',
+        header: '近3月',
+        cell: (info) => {
+          const original = info.row.original || {};
+          const code = original.code;
+          const value = code ? periodReturnsByCode[code]?.month3 : null;
+          const cls = value > 0 ? 'up' : value < 0 ? 'down' : '';
+          const text = value != null && Number.isFinite(value)
+            ? `${value > 0 ? '+' : ''}${value.toFixed(2)}%`
+            : '—';
+          return (
+            <div style={{ textAlign: 'right' }}>
+              <span className={cls} style={{ fontWeight: 700 }}>{text}</span>
+            </div>
+          );
+        },
+        meta: { align: 'right', cellClassName: 'period-return-cell', width: columnWidthMap.period3m ?? 72 },
+      },
+      {
+        id: 'period6m',
+        header: '近6月',
+        cell: (info) => {
+          const original = info.row.original || {};
+          const code = original.code;
+          const value = code ? periodReturnsByCode[code]?.month6 : null;
+          const cls = value > 0 ? 'up' : value < 0 ? 'down' : '';
+          const text = value != null && Number.isFinite(value)
+            ? `${value > 0 ? '+' : ''}${value.toFixed(2)}%`
+            : '—';
+          return (
+            <div style={{ textAlign: 'right' }}>
+              <span className={cls} style={{ fontWeight: 700 }}>{text}</span>
+            </div>
+          );
+        },
+        meta: { align: 'right', cellClassName: 'period-return-cell', width: columnWidthMap.period6m ?? 72 },
+      },
+      {
+        id: 'period1y',
+        header: '近1年',
+        cell: (info) => {
+          const original = info.row.original || {};
+          const code = original.code;
+          const value = code ? periodReturnsByCode[code]?.year1 : null;
+          const cls = value > 0 ? 'up' : value < 0 ? 'down' : '';
+          const text = value != null && Number.isFinite(value)
+            ? `${value > 0 ? '+' : ''}${value.toFixed(2)}%`
+            : '—';
+          return (
+            <div style={{ textAlign: 'right' }}>
+              <span className={cls} style={{ fontWeight: 700 }}>{text}</span>
+            </div>
+          );
+        },
+        meta: { align: 'right', cellClassName: 'period-return-cell', width: columnWidthMap.period1y ?? 72 },
+      },
+      {
         accessorKey: 'latestNav',
         header: '最新净值',
         cell: (info) => {
@@ -1079,7 +1253,7 @@ export default function MobileFundTable({
       },
       {
         accessorKey: 'yesterdayChangePercent',
-        header: '昨日涨幅',
+        header: '最新涨幅',
         cell: (info) => {
           const original = info.row.original || {};
           const value = original.yesterdayChangeValue;
@@ -1199,6 +1373,39 @@ export default function MobileFundTable({
         meta: { align: 'right', cellClassName: 'profit-cell', width: columnWidthMap.todayProfit },
       },
       {
+        accessorKey: 'yesterdayProfit',
+        header: '昨日收益',
+        cell: (info) => {
+          const original = info.row.original || {};
+          const value = original.yesterdayProfitValue;
+          const hasProfit = value != null;
+          const cls = hasProfit ? (value > 0 ? 'up' : value < 0 ? 'down' : '') : 'muted';
+          const amountStr = hasProfit ? (info.getValue() ?? '') : '—';
+          const percentStr = original.yesterdayProfitPercent ?? '';
+          const pctVal = original.yesterdaySecondLinePctValue;
+          const pctCls = pctVal != null && Number.isFinite(pctVal)
+            ? (pctVal > 0 ? 'up' : pctVal < 0 ? 'down' : '')
+            : 'muted';
+          return (
+            <div style={{ width: '100%' }}>
+              <span className={cls} style={{ display: 'block', width: '100%', fontWeight: 700 }}>
+                <FitText maxFontSize={14} minFontSize={10}>
+                  {masked && hasProfit ? <span className="mask-text">******</span> : amountStr}
+                </FitText>
+              </span>
+              {percentStr && !masked ? (
+                <span className={`${pctCls} yesterday-profit-percent`} style={{ display: 'block', width: '100%', fontSize: '0.75em', opacity: 0.9, fontWeight: 500 }}>
+                  <FitText maxFontSize={11} minFontSize={9}>
+                    {percentStr}
+                  </FitText>
+                </span>
+              ) : null}
+            </div>
+          );
+        },
+        meta: { align: 'right', cellClassName: 'yesterday-profit-cell', width: columnWidthMap.yesterdayProfit ?? 80 },
+      },
+      {
         accessorKey: 'holdingProfit',
         header: '持有收益',
         cell: (info) => {
@@ -1239,6 +1446,7 @@ export default function MobileFundTable({
       sortBy,
       relatedSectorByCode,
       sectorQuoteByLabel,
+      periodReturnsByCode,
       isBulkDeleteMode,
       bulkSelectedCodes,
       exitBulkDeleteMode,
@@ -1353,7 +1561,7 @@ export default function MobileFundTable({
 
   const getAlignClass = (columnId) => {
     if (columnId === 'fundName') return '';
-    if (['latestNav', 'estimateNav', 'yesterdayChangePercent', 'estimateChangePercent', 'totalChangePercent', 'holdingDays', 'todayProfit', 'holdingProfit'].includes(columnId)) return 'text-right';
+    if (['latestNav', 'estimateNav', 'yesterdayChangePercent', 'estimateChangePercent', 'totalChangePercent', 'holdingDays', 'todayProfit', 'yesterdayProfit', 'holdingProfit', 'period1w', 'period1m', 'period3m', 'period6m', 'period1y'].includes(columnId)) return 'text-right';
     return 'text-right';
   };
 

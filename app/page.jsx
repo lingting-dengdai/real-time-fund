@@ -65,7 +65,13 @@ import githubImg from "./assets/github.svg";
 import { supabase, isSupabaseConfigured } from './lib/supabase';
 import { toast as sonnerToast } from 'sonner';
 import { recordValuation, getAllValuationSeries, clearFund } from './lib/valuationTimeseries';
-import { getAllDailyEarnings, recordDailyEarnings, clearDailyEarnings, aggregatePortfolioDailyEarnings } from './lib/dailyEarnings';
+import {
+  DAILY_EARNINGS_SCOPE_ALL,
+  getAllDailyEarningsScoped,
+  recordDailyEarnings,
+  clearDailyEarnings,
+  aggregatePortfolioDailyEarnings,
+} from './lib/dailyEarnings';
 import { loadHolidaysForYears, isTradingDay as isDateTradingDay } from './lib/tradingCalendar';
 import { parseFundTextWithLLM, fetchFundData, fetchFundNetValueRange, fetchLatestRelease, fetchShanghaiIndexDate, fetchSmartFundNetValue, searchFunds } from './api/fund';
 import packageJson from '../package.json';
@@ -256,12 +262,8 @@ export default function HomePage() {
 
   // 估值分时序列（每次调用估值接口记录，用于分时图）
   const [valuationSeries, setValuationSeries] = useState(() => (typeof window !== 'undefined' ? getAllValuationSeries() : {}));
-  // 每日收益序列（有持仓金额的基金才记录，用于“我的收益”折线图；同步云端）
-  const [fundDailyEarnings, setFundDailyEarnings] = useState(() => (typeof window !== 'undefined' ? getAllDailyEarnings() : {}));
-  const portfolioDailySeries = useMemo(
-    () => aggregatePortfolioDailyEarnings(fundDailyEarnings),
-    [fundDailyEarnings]
-  );
+  // 每日收益序列（按 scope 分桶：all + 自定义分组 id）
+  const [fundDailyEarnings, setFundDailyEarnings] = useState(() => (typeof window !== 'undefined' ? getAllDailyEarningsScoped() : {}));
 
   // 自选状态
   const [favorites, setFavorites] = useState(new Set());
@@ -276,8 +278,8 @@ export default function HomePage() {
     { id: 'default', label: '默认', enabled: true },
     // 估值涨幅为原始名称，"涨跌幅"为别名
     { id: 'yield', label: '估值涨幅', alias: '涨跌幅', enabled: true },
-    // 昨日涨幅排序：默认隐藏
-    { id: 'yesterdayIncrease', label: '昨日涨幅', enabled: false },
+    // 最新涨幅排序：默认隐藏
+    { id: 'yesterdayIncrease', label: '最新涨幅', enabled: false },
     // 持仓金额排序：默认隐藏
     { id: 'holdingAmount', label: '持仓金额', enabled: false },
     { id: 'todayProfit', label: '当日收益', enabled: false },
@@ -787,6 +789,43 @@ export default function HomePage() {
     currentTab !== 'all' && currentTab !== 'fav' && groups.some((g) => g.id === currentTab)
       ? currentTab
       : null;
+  const dailyEarningsScope = activeGroupId || DAILY_EARNINGS_SCOPE_ALL;
+  const currentFundDailyEarnings = useMemo(() => {
+    if (!isPlainObject(fundDailyEarnings)) return {};
+    const scoped = fundDailyEarnings[dailyEarningsScope];
+    return isPlainObject(scoped) ? scoped : {};
+  }, [fundDailyEarnings, dailyEarningsScope]);
+  const portfolioDailySeries = useMemo(
+    () => {
+      if (!isPlainObject(fundDailyEarnings)) return [];
+      const mergedByCode = {};
+      Object.values(fundDailyEarnings).forEach((bucket) => {
+        if (!isPlainObject(bucket)) return;
+        Object.entries(bucket).forEach(([code, list]) => {
+          if (!Array.isArray(list) || list.length === 0) return;
+          const prev = Array.isArray(mergedByCode[code]) ? mergedByCode[code] : [];
+          // 按 scope 合并后按日期去重，避免同一基金同一天重复累计
+          const byDate = new Map();
+          [...prev, ...list].forEach((item) => {
+            const date = item?.date ? String(item.date) : '';
+            const earnings = Number(item?.earnings);
+            const rateRaw = item?.rate;
+            const rate = rateRaw == null || rateRaw === '' ? null : Number(rateRaw);
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+            if (!Number.isFinite(earnings)) return;
+            byDate.set(date, {
+              date,
+              earnings,
+              rate: Number.isFinite(rate) ? rate : null,
+            });
+          });
+          mergedByCode[code] = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+        });
+      });
+      return aggregatePortfolioDailyEarnings(mergedByCode);
+    },
+    [fundDailyEarnings]
+  );
 
   const holdingsForTab = useMemo(() => {
     if (!activeGroupId) return holdings;
@@ -877,7 +916,7 @@ export default function HomePage() {
           const hasA = Number.isFinite(valA);
           const hasB = Number.isFinite(valB);
 
-          // 无昨日涨幅数据（界面展示为 `—`）的基金统一排在最后
+          // 无最新涨幅数据（界面展示为 `—`）的基金统一排在最后
           if (!hasA && !hasB) return 0;
           if (!hasA) return 1;
           if (!hasB) return -1;
@@ -978,6 +1017,35 @@ export default function HomePage() {
           profitToday != null && principal > 0
             ? `${profitToday > 0 ? '+' : profitToday < 0 ? '-' : ''}${Math.abs((profitToday / principal) * 100).toFixed(2)}%`
             : '';
+
+        const dailyList = Array.isArray(currentFundDailyEarnings?.[f.code]) ? currentFundDailyEarnings[f.code] : [];
+        const latestNavDateStr = isString(f.jzrq) ? f.jzrq : '';
+        const matchedDaily =
+          (latestNavDateStr ? dailyList.find((d) => d?.date === latestNavDateStr) : null)
+          || (dailyList.length ? dailyList[dailyList.length - 1] : null);
+        const yesterdayProfitVal =
+          matchedDaily && Number.isFinite(Number(matchedDaily.earnings))
+            ? Number(matchedDaily.earnings)
+            : null;
+        const yesterdayProfit =
+          yesterdayProfitVal == null
+            ? ''
+            : `${yesterdayProfitVal > 0 ? '+' : yesterdayProfitVal < 0 ? '-' : ''}¥${Math.abs(yesterdayProfitVal).toFixed(2)}`;
+        const dailyRate =
+          matchedDaily && matchedDaily.rate != null && matchedDaily.rate !== '' && Number.isFinite(Number(matchedDaily.rate))
+            ? Number(matchedDaily.rate)
+            : null;
+        const yesterdayProfitPercentLine =
+          yesterdayProfitVal != null && principal > 0
+            ? `${yesterdayProfitVal > 0 ? '+' : yesterdayProfitVal < 0 ? '-' : ''}${Math.abs((yesterdayProfitVal / principal) * 100).toFixed(2)}%`
+            : (dailyRate != null
+              ? `${dailyRate > 0 ? '+' : ''}${dailyRate.toFixed(2)}%`
+              : '');
+        const yesterdaySecondLinePctValue =
+          yesterdayProfitVal != null && principal > 0
+            ? (yesterdayProfitVal / principal) * 100
+            : dailyRate;
+
         const holdingProfit =
           total == null
             ? ''
@@ -1040,12 +1108,16 @@ export default function HomePage() {
           todayProfit,
           todayProfitPercent,
           todayProfitValue,
+          yesterdayProfit,
+          yesterdayProfitValue: yesterdayProfitVal,
+          yesterdayProfitPercent: yesterdayProfitPercentLine,
+          yesterdaySecondLinePctValue,
           holdingProfit,
           holdingProfitPercent,
           holdingProfitValue,
         };
       }),
-    [displayFunds, holdingsForTab, isTradingDay, todayStr, getHoldingProfit, dcaPlansForTab],
+    [displayFunds, holdingsForTab, isTradingDay, todayStr, getHoldingProfit, dcaPlansForTab, currentFundDailyEarnings],
   );
 
   // 自动滚动选中 Tab 到可视区域
@@ -1763,9 +1835,17 @@ export default function HomePage() {
   };
 
   const confirmScanImport = async (targetGroupId = 'all', expandAfterAdd = true) => {
-    const codes = Array.from(selectedScannedCodes);
+    const rawCodes = Array.from(selectedScannedCodes);
+    const targetExists = (code) => {
+      if (!code) return false;
+      if (targetGroupId === 'all') return funds.some((f) => f.code === code);
+      if (targetGroupId === 'fav') return favorites?.has?.(code);
+      const g = groups.find((x) => x.id === targetGroupId);
+      return !!(g && Array.isArray(g.codes) && g.codes.includes(code));
+    };
+    const codes = rawCodes.filter((c) => !targetExists(c));
     if (codes.length === 0) {
-      showToast('请至少选择一个基金代码', 'error');
+      showToast('所选基金已在目标分组中', 'info');
       return;
     }
     setScanConfirmModalOpen(false);
@@ -1788,17 +1868,17 @@ export default function HomePage() {
         const code = codes[i];
         setScanImportProgress(prev => ({ ...prev, current: i + 1 }));
 
-        if (funds.some(existing => existing.code === code)) continue;
+        const existed = funds.some(existing => existing.code === code);
         try {
-          const data = await fetchFundData(code);
-          newFunds.push(data);
+          const data = existed ? (funds.find((f) => f.code === code) || null) : await fetchFundData(code);
+          if (!existed && data) newFunds.push(data);
 
           const scannedFund = scannedFunds.find(f => f.code === code);
           const holdAmounts = parseAmount(scannedFund?.holdAmounts);
           const holdGains = parseAmount(scannedFund?.holdGains);
           const dwjz = data?.dwjz || data?.gsz || 0;
 
-          if (holdAmounts !== null && dwjz > 0) {
+          if (!existed && holdAmounts !== null && dwjz > 0) {
             const share = holdAmounts / dwjz;
             const profit = holdGains !== null ? holdGains : 0;
             const principal = holdAmounts - profit;
@@ -1817,9 +1897,10 @@ export default function HomePage() {
         }
       }
 
-      if (newFunds.length > 0) {
-        const newCodesSet = new Set(newFunds.map((f) => f.code));
+      const newCodesSet = new Set(newFunds.map((f) => f.code));
+      const allSelectedSet = new Set(codes);
 
+      if (newFunds.length > 0) {
         setFunds(prev => {
           const updated = dedupeByCode([...newFunds, ...prev]);
           storageHelper.setItem('funds', JSON.stringify(updated));
@@ -1857,41 +1938,42 @@ export default function HomePage() {
             return next;
           });
         }
+      }
 
-        if (targetGroupId === 'fav') {
-          setFavorites(prev => {
-            const next = new Set(prev);
-            codes.map(normalizeCode).filter(Boolean).forEach(code => next.add(code));
-            storageHelper.setItem('favorites', JSON.stringify(Array.from(next)));
-            return next;
+      // 无论是否新增 funds，都允许把已存在基金加入到目标分组/自选
+      if (targetGroupId === 'fav') {
+        setFavorites(prev => {
+          const next = new Set(prev);
+          codes.map(normalizeCode).filter(Boolean).forEach(code => next.add(code));
+          storageHelper.setItem('favorites', JSON.stringify(Array.from(next)));
+          return next;
+        });
+        setCurrentTab('fav');
+      } else if (targetGroupId && targetGroupId !== 'all') {
+        setGroups(prev => {
+          const updated = prev.map(g => {
+            if (g.id === targetGroupId) {
+              return {
+                ...g,
+                codes: Array.from(new Set([...(g.codes || []), ...codes]))
+              };
+            }
+            return g;
           });
-          setCurrentTab('fav');
-        } else if (targetGroupId && targetGroupId !== 'all') {
-          setGroups(prev => {
-            const updated = prev.map(g => {
-              if (g.id === targetGroupId) {
-                return {
-                  ...g,
-                  codes: Array.from(new Set([...g.codes, ...codes]))
-                };
-              }
-              return g;
-            });
-            storageHelper.setItem('groups', JSON.stringify(updated));
-            return updated;
-          });
-          setCurrentTab(targetGroupId);
-        } else {
-          setCurrentTab('all');
-        }
-
-        setSuccessModal({ open: true, message: `成功导入 ${successCount} 个基金` });
+          storageHelper.setItem('groups', JSON.stringify(updated));
+          return updated;
+        });
+        setCurrentTab(targetGroupId);
       } else {
-        if (codes.length > 0 && successCount === 0 && failedCount === 0) {
-          setSuccessModal({ open: true, message: '识别的基金已全部添加' });
-        } else {
-          showToast('未能导入任何基金', 'info');
-        }
+        setCurrentTab('all');
+      }
+
+      if (successCount > 0) {
+        setSuccessModal({ open: true, message: `成功导入 ${successCount} 个基金` });
+      } else if (allSelectedSet.size > 0 && failedCount === 0) {
+        setSuccessModal({ open: true, message: '所选基金已在目标分组中' });
+      } else {
+        showToast('未能导入任何基金', 'info');
       }
     } catch (e) {
       showToast('导入失败', 'error');
@@ -2432,6 +2514,17 @@ export default function HomePage() {
       storageHelper.setItem('dcaPlans', JSON.stringify(nextScoped));
       return nextScoped;
     });
+    try {
+      clearDailyEarnings(code, groupId);
+      setFundDailyEarnings((prev) => {
+        if (!isPlainObject(prev) || !isPlainObject(prev[groupId]) || !(code in prev[groupId])) return prev;
+        const next = { ...prev, [groupId]: { ...prev[groupId] } };
+        delete next[groupId][code];
+        return next;
+      });
+      const raw = localStorage.getItem('fundDailyEarnings') || '{}';
+      storageHelper.setItem('fundDailyEarnings', raw);
+    } catch { /* empty */ }
 
     if (!silent) showToast('已从当前分组移除该基金', 'success');
   };
@@ -2506,6 +2599,25 @@ export default function HomePage() {
       storageHelper.setItem('dcaPlans', JSON.stringify(nextScoped));
       return nextScoped;
     });
+    try {
+      for (const c of set) clearDailyEarnings(c, groupId);
+      setFundDailyEarnings((prev) => {
+        if (!isPlainObject(prev) || !isPlainObject(prev[groupId])) return prev;
+        const bucket = prev[groupId];
+        let changed = false;
+        const nextBucket = { ...bucket };
+        for (const c of set) {
+          if (c in nextBucket) {
+            delete nextBucket[c];
+            changed = true;
+          }
+        }
+        if (!changed) return prev;
+        return { ...prev, [groupId]: nextBucket };
+      });
+      const raw = localStorage.getItem('fundDailyEarnings') || '{}';
+      storageHelper.setItem('fundDailyEarnings', raw);
+    } catch { /* empty */ }
   };
 
   const toggleFundInGroup = (code, groupId) => {
@@ -3192,7 +3304,10 @@ export default function HomePage() {
         // 记录/补齐每日收益（仅对有持仓的基金）
         try {
           let changed = false;
-          const nextDailyMap = { ...(isPlainObject(fundDailyEarnings) ? fundDailyEarnings : {}) };
+          const nextScopedDailyMap = { ...(isPlainObject(fundDailyEarnings) ? fundDailyEarnings : {}) };
+          const nextDailyMap = {
+            ...(isPlainObject(nextScopedDailyMap[dailyEarningsScope]) ? nextScopedDailyMap[dailyEarningsScope] : {})
+          };
           const isValidDateStr = (s) => isString(s) && /^\d{4}-\d{2}-\d{2}$/.test(s);
           const addDays = (dateStr, days) => dayjs.tz(dateStr, TZ).add(days, 'day').format('YYYY-MM-DD');
           const subDays = (dateStr, days) => dayjs.tz(dateStr, TZ).subtract(days, 'day').format('YYYY-MM-DD');
@@ -3265,7 +3380,7 @@ export default function HomePage() {
           for (const u of updated) {
             const code = u?.code;
             if (!code) continue;
-            const h = holdings?.[code];
+            const h = holdingsForTab?.[code];
             const share = h?.share;
             // 规则 1：基金存在持仓数据（只要求份额有效）
             if (!isNumber(share) || share <= 0) continue;
@@ -3281,7 +3396,7 @@ export default function HomePage() {
             if (!existing.length) {
               const v = calcLatestDayFromFund(u, share);
               if (v && Number.isFinite(v.earnings)) {
-                const list = recordDailyEarnings(code, v.earnings, latestNavDate, v.rate);
+                const list = recordDailyEarnings(code, v.earnings, latestNavDate, v.rate, dailyEarningsScope);
                 nextDailyMap[code] = list;
                 changed = true;
               }
@@ -3296,7 +3411,7 @@ export default function HomePage() {
                       const earnings = calcEarningsFromNavs(nav, prevNav, share);
                       const rate = calcRateFromNavs(nav, prevNav);
                       if (Number.isFinite(earnings)) {
-                        const list = recordDailyEarnings(code, earnings, latestNavDate, rate);
+                        const list = recordDailyEarnings(code, earnings, latestNavDate, rate, dailyEarningsScope);
                         nextDailyMap[code] = list;
                         changed = true;
                       }
@@ -3338,14 +3453,15 @@ export default function HomePage() {
               const earnings = calcEarningsFromNavs(nav, prevNav, share);
               const rate = calcRateFromNavs(nav, prevNav);
               if (Number.isFinite(earnings)) {
-                const list = recordDailyEarnings(code, earnings, cursor, rate);
+                const list = recordDailyEarnings(code, earnings, cursor, rate, dailyEarningsScope);
                 nextDailyMap[code] = list;
                 changed = true;
               }
             }
           }
           if (changed) {
-            setFundDailyEarnings(nextDailyMap);
+            nextScopedDailyMap[dailyEarningsScope] = nextDailyMap;
+            setFundDailyEarnings(nextScopedDailyMap);
             const raw = localStorage.getItem('fundDailyEarnings') || '{}';
             storageHelper.setItem('fundDailyEarnings', raw);
           }
@@ -3436,13 +3552,8 @@ export default function HomePage() {
       name: nameMap[code] || '',
       status: funds.some(f => f.code === code) ? 'added' : 'pending'
     }));
-    const pendingCodes = fundsToConfirm.filter(f => f.status === 'pending').map(f => f.code);
-    if (pendingCodes.length === 0) {
-      setError('所选基金已全部添加');
-      return;
-    }
     setScannedFunds(fundsToConfirm);
-    setSelectedScannedCodes(new Set(pendingCodes));
+    setSelectedScannedCodes(new Set(selectedCodes));
     setIsOcrScan(false);
     setScanConfirmModalOpen(true);
     setSearchTerm('');
@@ -3555,10 +3666,18 @@ export default function HomePage() {
     try {
       clearDailyEarnings(removeCode);
       setFundDailyEarnings(prev => {
-        if (!prev || !(removeCode in prev)) return prev;
+        if (!isPlainObject(prev)) return prev;
+        let changed = false;
         const next = { ...prev };
-        delete next[removeCode];
-        return next;
+        Object.keys(next).forEach((scopeKey) => {
+          const bucket = next[scopeKey];
+          if (!isPlainObject(bucket) || !(removeCode in bucket)) return;
+          const nb = { ...bucket };
+          delete nb[removeCode];
+          next[scopeKey] = nb;
+          changed = true;
+        });
+        return changed ? next : prev;
       });
       const raw = localStorage.getItem('fundDailyEarnings') || '{}';
       storageHelper.setItem('fundDailyEarnings', raw);
@@ -3751,18 +3870,28 @@ export default function HomePage() {
         clearDailyEarnings(c);
       }
       setFundDailyEarnings((prev) => {
-        if (!prev) return prev;
-        let next = prev;
+        if (!isPlainObject(prev)) return prev;
+        const next = { ...prev };
         let changed = false;
-        for (const c of set) {
-          if (c in next) {
-            if (!changed) {
-              next = { ...prev };
-              changed = true;
+        Object.keys(next).forEach((scopeKey) => {
+          const bucket = next[scopeKey];
+          if (!isPlainObject(bucket)) return;
+          let nb = bucket;
+          let innerChanged = false;
+          for (const c of set) {
+            if (c in nb) {
+              if (!innerChanged) {
+                nb = { ...bucket };
+                innerChanged = true;
+              }
+              delete nb[c];
             }
-            delete next[c];
           }
-        }
+          if (innerChanged) {
+            next[scopeKey] = nb;
+            changed = true;
+          }
+        });
         if (changed) {
           const raw = localStorage.getItem('fundDailyEarnings') || '{}';
           storageHelper.setItem('fundDailyEarnings', raw);
@@ -3874,6 +4003,15 @@ export default function HomePage() {
     if (value === null || value === undefined || value === '') return null;
     const num = Number(value);
     return Number.isFinite(num) ? num : null;
+  };
+  const normalizeFundDailyEarningsScoped = (source) => {
+    if (!isPlainObject(source)) return {};
+    const values = Object.values(source);
+    const hasScoped = values.some((v) => isPlainObject(v));
+    if (!hasScoped) {
+      return { [DAILY_EARNINGS_SCOPE_ALL]: source };
+    }
+    return source;
   };
 
   function getComparablePayload(payload) {
@@ -4061,17 +4199,23 @@ export default function HomePage() {
       });
 
     const customSettings = isPlainObject(payload.customSettings) ? payload.customSettings : {};
-    const fundDailyEarningsSource = isPlainObject(payload.fundDailyEarnings) ? payload.fundDailyEarnings : {};
+    const fundDailyEarningsSource = normalizeFundDailyEarningsScoped(payload.fundDailyEarnings);
     const fundDailyEarningsSig = Object.keys(fundDailyEarningsSource)
-      .map(normalizeCode)
-      .filter((code) => uniqueFundCodes.includes(code))
       .sort()
-      .map((code) => {
-        const list = Array.isArray(fundDailyEarningsSource[code]) ? fundDailyEarningsSource[code] : [];
-        const last = list.length ? list[list.length - 1] : null;
-        const date = last?.date ? String(last.date) : '';
-        const earnings = Number(last?.earnings);
-        return `${code}|${date}|${Number.isFinite(earnings) ? earnings.toFixed(2) : ''}|${list.length}`;
+      .flatMap((scopeKey) => {
+        const bucket = fundDailyEarningsSource[scopeKey];
+        if (!isPlainObject(bucket)) return [];
+        return Object.keys(bucket)
+          .map(normalizeCode)
+          .filter((code) => uniqueFundCodes.includes(code))
+          .sort()
+          .map((code) => {
+            const list = Array.isArray(bucket[code]) ? bucket[code] : [];
+            const last = list.length ? list[list.length - 1] : null;
+            const date = last?.date ? String(last.date) : '';
+            const earnings = Number(last?.earnings);
+            return `${scopeKey}|${code}|${date}|${Number.isFinite(earnings) ? earnings.toFixed(2) : ''}|${list.length}`;
+          });
       });
 
     return JSON.stringify({
@@ -4242,32 +4386,38 @@ export default function HomePage() {
         }, {});
         if (!cleanedDcaPlans[DCA_SCOPE_GLOBAL]) cleanedDcaPlans[DCA_SCOPE_GLOBAL] = {};
 
-        const cleanedFundDailyEarnings = isPlainObject(all.fundDailyEarnings)
-          ? Object.entries(all.fundDailyEarnings).reduce((acc, [code, list]) => {
-              if (!fundCodes.has(code) || !Array.isArray(list)) return acc;
-              const normalized = list
-                .map((item) => {
-                  const date = item?.date ? String(item.date) : '';
-                  const earnings = Number(item?.earnings);
-                  const rateRaw = item?.rate;
-                  const rate = rateRaw === null || rateRaw === undefined || rateRaw === ''
-                    ? null
-                    : Number(rateRaw);
-                  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
-                  if (!Number.isFinite(earnings)) return null;
-                  return {
-                    date,
-                    earnings,
-                    ...(Number.isFinite(rate) ? { rate } : { rate: null }),
-                  };
-                })
-                .filter(Boolean)
-                .sort((a, b) => a.date.localeCompare(b.date));
-              if (normalized.length === 0) return acc;
-              acc[code] = normalized;
-              return acc;
-            }, {})
-          : {};
+        const dailyScoped = normalizeFundDailyEarningsScoped(all.fundDailyEarnings);
+        const cleanedFundDailyEarnings = Object.entries(dailyScoped).reduce((acc, [scopeKey, bucket]) => {
+          if (!isPlainObject(bucket)) return acc;
+          if (scopeKey !== DAILY_EARNINGS_SCOPE_ALL && !validGroupIdSet.has(scopeKey)) return acc;
+          const normalizedBucket = Object.entries(bucket).reduce((bacc, [code, list]) => {
+            if (!fundCodes.has(code) || !Array.isArray(list)) return bacc;
+            const normalized = list
+              .map((item) => {
+                const date = item?.date ? String(item.date) : '';
+                const earnings = Number(item?.earnings);
+                const rateRaw = item?.rate;
+                const rate = rateRaw === null || rateRaw === undefined || rateRaw === ''
+                  ? null
+                  : Number(rateRaw);
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+                if (!Number.isFinite(earnings)) return null;
+                return {
+                  date,
+                  earnings,
+                  ...(Number.isFinite(rate) ? { rate } : { rate: null }),
+                };
+              })
+              .filter(Boolean)
+              .sort((a, b) => a.date.localeCompare(b.date));
+            if (normalized.length === 0) return bacc;
+            bacc[code] = normalized;
+            return bacc;
+          }, {});
+          if (Object.keys(normalizedBucket).length === 0) return acc;
+          acc[scopeKey] = normalizedBucket;
+          return acc;
+        }, {});
 
         return {
           funds: all.funds,
@@ -4385,29 +4535,36 @@ export default function HomePage() {
       setDcaPlans(nextDcaPlans);
       storageHelper.setItem('dcaPlans', JSON.stringify(nextDcaPlans));
 
-      const cloudDaily = isPlainObject(cloudData.fundDailyEarnings) ? cloudData.fundDailyEarnings : {};
-      const nextFundDailyEarnings = Object.entries(cloudDaily).reduce((acc, [code, list]) => {
-        if (!nextFundCodes.has(code) || !Array.isArray(list)) return acc;
-        const normalized = list
-          .map((item) => {
-            const date = item?.date ? String(item.date) : '';
-            const earnings = Number(item?.earnings);
-            const rateRaw = item?.rate;
-            const rate = rateRaw === null || rateRaw === undefined || rateRaw === ''
-              ? null
-              : Number(rateRaw);
-            if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
-            if (!Number.isFinite(earnings)) return null;
-            return {
-              date,
-              earnings,
-              ...(Number.isFinite(rate) ? { rate } : { rate: null }),
-            };
-          })
-          .filter(Boolean)
-          .sort((a, b) => a.date.localeCompare(b.date));
-        if (normalized.length === 0) return acc;
-        acc[code] = normalized;
+      const cloudDaily = normalizeFundDailyEarningsScoped(cloudData.fundDailyEarnings);
+      const nextFundDailyEarnings = Object.entries(cloudDaily).reduce((acc, [scopeKey, bucket]) => {
+        if (!isPlainObject(bucket)) return acc;
+        if (scopeKey !== DAILY_EARNINGS_SCOPE_ALL && !cloudGroupIds.has(scopeKey)) return acc;
+        const normalizedBucket = Object.entries(bucket).reduce((bacc, [code, list]) => {
+          if (!nextFundCodes.has(code) || !Array.isArray(list)) return bacc;
+          const normalized = list
+            .map((item) => {
+              const date = item?.date ? String(item.date) : '';
+              const earnings = Number(item?.earnings);
+              const rateRaw = item?.rate;
+              const rate = rateRaw === null || rateRaw === undefined || rateRaw === ''
+                ? null
+                : Number(rateRaw);
+              if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+              if (!Number.isFinite(earnings)) return null;
+              return {
+                date,
+                earnings,
+                ...(Number.isFinite(rate) ? { rate } : { rate: null }),
+              };
+            })
+            .filter(Boolean)
+            .sort((a, b) => a.date.localeCompare(b.date));
+          if (normalized.length === 0) return bacc;
+          bacc[code] = normalized;
+          return bacc;
+        }, {});
+        if (Object.keys(normalizedBucket).length === 0) return acc;
+        acc[scopeKey] = normalizedBucket;
         return acc;
       }, {});
       setFundDailyEarnings(nextFundDailyEarnings);
@@ -5039,14 +5196,12 @@ export default function HomePage() {
                     <div className="search-results">
                       {searchResults.map((fund) => {
                         const isSelected = selectedFunds.some(f => f.CODE === fund.CODE);
-                        const isAlreadyAdded = funds.some(f => f.code === fund.CODE);
                         return (
                           <div
                             key={fund.CODE}
-                            className={`search-item ${isSelected ? 'selected' : ''} ${isAlreadyAdded ? 'added' : ''}`}
+                            className={`search-item ${isSelected ? 'selected' : ''}`}
                             onMouseDown={(e) => e.preventDefault()}
                             onClick={() => {
-                              if (isAlreadyAdded) return;
                               toggleSelectFund(fund);
                             }}
                           >
@@ -5054,13 +5209,9 @@ export default function HomePage() {
                               <span className="fund-name">{fund.NAME}</span>
                               <span className="fund-code muted">#{fund.CODE} | {fund.TYPE}</span>
                             </div>
-                            {isAlreadyAdded ? (
-                              <span className="added-label">已添加</span>
-                            ) : (
-                              <div className="checkbox">
-                                {isSelected && <div className="checked-mark" />}
-                              </div>
-                            )}
+                            <div className="checkbox">
+                              {isSelected && <div className="checked-mark" />}
+                            </div>
                           </div>
                         );
                       })}
@@ -5556,7 +5707,7 @@ export default function HomePage() {
                                     holdings: holdingsForTab,
                                     percentModes,
                                     todayPercentModes,
-                                    fundDailyEarnings,
+                                    fundDailyEarnings: currentFundDailyEarnings,
                                     valuationSeries,
                                     collapsedCodes,
                                     collapsedTrends,
@@ -5653,7 +5804,7 @@ export default function HomePage() {
                             holdings: holdingsForTab,
                             percentModes,
                             todayPercentModes,
-                            fundDailyEarnings,
+                            fundDailyEarnings: currentFundDailyEarnings,
                             valuationSeries,
                             collapsedCodes,
                             collapsedTrends,
@@ -5702,7 +5853,7 @@ export default function HomePage() {
                               holdings={holdingsForTab}
                               percentModes={percentModes}
                               todayPercentModes={todayPercentModes}
-                              fundDailyEarnings={fundDailyEarnings}
+                              fundDailyEarnings={currentFundDailyEarnings}
                               valuationSeries={valuationSeries}
                               collapsedCodes={collapsedCodes}
                               collapsedTrends={collapsedTrends}
@@ -5734,44 +5885,7 @@ export default function HomePage() {
                 </motion.div>
               </AnimatePresence>
 
-              {currentTab !== 'all' && currentTab !== 'fav' && (
-                <motion.button
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="button-dashed"
-                  onClick={() => setAddFundToGroupOpen(true)}
-                  style={{
-                    width: '100%',
-                    height: '48px',
-                    border: '2px dashed var(--border)',
-                    background: 'transparent',
-                    borderRadius: '12px',
-                    color: 'var(--muted)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '8px',
-                    marginTop: '16px',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s ease',
-                    fontSize: '14px',
-                    fontWeight: 500
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.borderColor = 'var(--primary)';
-                    e.currentTarget.style.color = 'var(--primary)';
-                    e.currentTarget.style.background = 'rgba(34, 211, 238, 0.05)';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.borderColor = 'var(--border)';
-                    e.currentTarget.style.color = 'var(--muted)';
-                    e.currentTarget.style.background = 'transparent';
-                  }}
-                >
-                  <PlusIcon width="18" height="18" />
-                  <span>添加基金到此分组</span>
-                </motion.button>
-              )}
+              {/* 删除“添加基金到此分组”入口：分组加基金统一走搜索/导入 */}
             </>
           )}
         </div>
@@ -6106,6 +6220,8 @@ export default function HomePage() {
             onConfirm={confirmScanImport}
             refreshing={refreshing}
             groups={groups}
+            existingAllCodes={funds.map((f) => f?.code).filter(Boolean)}
+            existingFavCodes={Array.from(favorites || [])}
             isOcrScan={isOcrScan}
           />
         )}

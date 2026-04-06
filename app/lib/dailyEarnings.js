@@ -1,5 +1,11 @@
 /**
- * 每日收益数据管理：{ [code]: Array<{ date: string, earnings: number, rate?: number|null }> }
+ * 每日收益数据管理（按作用域分桶）：
+ * {
+ *   [scope]: {
+ *     [code]: Array<{ date: string, earnings: number, rate?: number|null }>
+ *   }
+ * }
+ * - scope: 'all'（全局）或自定义分组 id
  * - date: YYYY-MM-DD
  * - earnings: 当日收益（元）
  * - rate: 当日收益率（百分比数值，如 1.23 表示 +1.23%），可选
@@ -7,6 +13,7 @@
 import { isPlainObject, isString, isNumber } from 'lodash';
 
 const STORAGE_KEY = 'fundDailyEarnings';
+export const DAILY_EARNINGS_SCOPE_ALL = 'all';
 
 function normalizeItem(item) {
   if (!item || typeof item !== 'object') return null;
@@ -25,7 +32,13 @@ function getStored() {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : {};
-    return isPlainObject(parsed) ? parsed : {};
+    if (!isPlainObject(parsed)) return {};
+    // 兼容旧格式：{ [code]: list } -> { all: { [code]: list } }
+    const hasScopeBucket = Object.values(parsed).some((v) => isPlainObject(v));
+    if (!hasScopeBucket) {
+      return { [DAILY_EARNINGS_SCOPE_ALL]: parsed };
+    }
+    return parsed;
   } catch {
     return {};
   }
@@ -47,10 +60,14 @@ export function recordDailyEarnings(code, earnings, dateStr) {
 
   // 兼容老调用：recordDailyEarnings(code, earnings, dateStr, rate)
   const rate = arguments.length >= 4 ? arguments[3] : null;
+  const scope = arguments.length >= 5 && isString(arguments[4]) && arguments[4]
+    ? arguments[4]
+    : DAILY_EARNINGS_SCOPE_ALL;
   const normalizedRate = isNumber(rate) && Number.isFinite(rate) ? rate : null;
 
   const all = getStored();
-  const list = Array.isArray(all[code]) ? all[code] : [];
+  const scoped = isPlainObject(all[scope]) ? all[scope] : {};
+  const list = Array.isArray(scoped[code]) ? scoped[code] : [];
   const existingIndex = list.findIndex(item => item.date === dateStr);
 
   const nextList = existingIndex >= 0
@@ -59,27 +76,54 @@ export function recordDailyEarnings(code, earnings, dateStr) {
 
   nextList.sort((a, b) => a.date.localeCompare(b.date));
 
-  all[code] = nextList;
+  all[scope] = { ...scoped, [code]: nextList };
   setStored(all);
   return nextList.map(normalizeItem).filter(Boolean);
 }
 
-export function getDailyEarnings(code) {
+export function getDailyEarnings(code, scope = DAILY_EARNINGS_SCOPE_ALL) {
   const all = getStored();
-  const list = Array.isArray(all[code]) ? all[code] : [];
+  const scoped = isPlainObject(all[scope]) ? all[scope] : {};
+  const list = Array.isArray(scoped[code]) ? scoped[code] : [];
   return list.map(normalizeItem).filter(Boolean);
 }
 
-export function clearDailyEarnings(code) {
+export function clearDailyEarnings(code, scope = null) {
   const all = getStored();
-  if (!(code in all)) return;
+  let changed = false;
   const next = { ...all };
-  delete next[code];
+  if (scope && isPlainObject(next[scope]) && code in next[scope]) {
+    const bucket = { ...next[scope] };
+    delete bucket[code];
+    next[scope] = bucket;
+    changed = true;
+  } else if (!scope) {
+    Object.keys(next).forEach((sc) => {
+      if (!isPlainObject(next[sc])) return;
+      if (!(code in next[sc])) return;
+      const bucket = { ...next[sc] };
+      delete bucket[code];
+      next[sc] = bucket;
+      changed = true;
+    });
+  }
+  if (!changed) return;
   setStored(next);
 }
 
-export function getAllDailyEarnings() {
+export function getAllDailyEarnings(scope = DAILY_EARNINGS_SCOPE_ALL) {
+  const all = getStored();
+  const scoped = all[scope];
+  return isPlainObject(scoped) ? scoped : {};
+}
+
+export function getAllDailyEarningsScoped() {
   return getStored();
+}
+
+export function setAllDailyEarningsScoped(scopedMap) {
+  const next = isPlainObject(scopedMap) ? scopedMap : {};
+  setStored(next);
 }
 
 /**

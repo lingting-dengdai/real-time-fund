@@ -35,16 +35,22 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { DragIcon, SettingsIcon, StarIcon, TrashIcon, ResetIcon } from './Icons';
-import { fetchRelatedSectors, fetchRelatedSectorLiveQuote } from '@/app/api/fund';
+import { fetchFundPeriodReturns, fetchRelatedSectors, fetchRelatedSectorLiveQuote } from '@/app/api/fund';
 
 const NON_FROZEN_COLUMN_IDS = [
   'relatedSector',
+  'period1w',
+  'period1m',
+  'period3m',
+  'period6m',
+  'period1y',
   'yesterdayChangePercent',
   'estimateChangePercent',
   'totalChangePercent',
   'holdingAmount',
   'holdingDays',
   'todayProfit',
+  'yesterdayProfit',
   'holdingProfit',
   'latestNav',
   'estimateNav',
@@ -52,14 +58,20 @@ const NON_FROZEN_COLUMN_IDS = [
 
 const COLUMN_HEADERS = {
   relatedSector: '关联板块',
+  period1w: '近1周',
+  period1m: '近1月',
+  period3m: '近3月',
+  period6m: '近6月',
+  period1y: '近1年',
   latestNav: '最新净值',
   estimateNav: '估算净值',
-  yesterdayChangePercent: '昨日涨幅',
+  yesterdayChangePercent: '最新涨幅',
   estimateChangePercent: '估值涨幅',
   totalChangePercent: '估算收益',
   holdingAmount: '持仓金额',
   holdingDays: '持有天数',
   todayProfit: '当日收益',
+  yesterdayProfit: '昨日收益',
   holdingProfit: '持有收益',
 };
 
@@ -120,7 +132,7 @@ function SortableRow({ row, children, isTableDragging, disabled }) {
  *     code?: string;                // 基金代码（可选，只用于展示在名称下方）
  *     latestNav: string|number;     // 最新净值
  *     estimateNav: string|number;   // 估算净值
- *     yesterdayChangePercent: string|number; // 昨日涨幅
+ *     yesterdayChangePercent: string|number; // 最新涨幅
  *     estimateChangePercent: string|number;  // 估值涨幅
  *     holdingAmount: string|number;         // 持仓金额
  *     todayProfit: string|number;           // 当日收益
@@ -292,6 +304,12 @@ export default function PcFundTable({
       const next = { ...vis };
       if (next.relatedSector === undefined) next.relatedSector = false;
       if (next.holdingDays === undefined) next.holdingDays = false;
+      if (next.period1w === undefined) next.period1w = false;
+      if (next.period1m === undefined) next.period1m = false;
+      if (next.period3m === undefined) next.period3m = false;
+      if (next.period6m === undefined) next.period6m = false;
+      if (next.period1y === undefined) next.period1y = false;
+      if (next.yesterdayProfit === undefined) next.yesterdayProfit = false;
       return next;
     }
     const allVisible = {};
@@ -299,6 +317,12 @@ export default function PcFundTable({
     // 新增列：默认隐藏（用户可在表格设置中开启）
       allVisible.relatedSector = false;
       allVisible.holdingDays = false;
+      allVisible.period1w = false;
+      allVisible.period1m = false;
+      allVisible.period3m = false;
+      allVisible.period6m = false;
+      allVisible.period1y = false;
+      allVisible.yesterdayProfit = false;
       return allVisible;
   })();
   const columnSizing = (() => {
@@ -372,6 +396,12 @@ export default function PcFundTable({
     });
     allVisible.relatedSector = false;
     allVisible.holdingDays = false;
+    allVisible.period1w = false;
+    allVisible.period1m = false;
+    allVisible.period3m = false;
+    allVisible.period6m = false;
+    allVisible.period1y = false;
+    allVisible.yesterdayProfit = false;
     setColumnVisibility(allVisible);
   };
   const handleToggleColumnVisibility = (columnId, visible) => {
@@ -551,6 +581,49 @@ export default function PcFundTable({
     return () => { cancelled = true; };
   }, [relatedSectorEnabled, data, relatedSectorByCode]);
 
+  const periodReturnsEnabled =
+    columnVisibility?.period1w !== false
+    || columnVisibility?.period1m !== false
+    || columnVisibility?.period3m !== false
+    || columnVisibility?.period6m !== false
+    || columnVisibility?.period1y !== false;
+  const periodReturnsCacheRef = useRef(new Map());
+  const [periodReturnsByCode, setPeriodReturnsByCode] = useState({});
+
+  useEffect(() => {
+    if (!periodReturnsEnabled) return;
+    if (!Array.isArray(data) || data.length === 0) return;
+
+    const codes = Array.from(new Set(data.map((d) => d?.code).filter(Boolean)));
+    const missing = codes.filter((code) => !periodReturnsCacheRef.current.has(code));
+    if (missing.length === 0) return;
+
+    let cancelled = false;
+    (async () => {
+      await runWithConcurrency(missing, 4, async (code) => {
+        const value = await fetchFundPeriodReturns(code);
+        periodReturnsCacheRef.current.set(code, value);
+        if (cancelled) return;
+        setPeriodReturnsByCode((prev) => {
+          const prevVal = prev[code];
+          if (
+            prevVal
+            && prevVal.week === value.week
+            && prevVal.month === value.month
+            && prevVal.month3 === value.month3
+            && prevVal.month6 === value.month6
+            && prevVal.year1 === value.year1
+          ) {
+            return prev;
+          }
+          return { ...prev, [code]: value };
+        });
+      });
+    })();
+
+    return () => { cancelled = true; };
+  }, [periodReturnsEnabled, data]);
+
   useEffect(() => {
     const tableEl = tableContainerRef.current;
     const portalEl = portalHeaderRef.current;
@@ -719,6 +792,121 @@ export default function PcFundTable({
         },
       },
       {
+        id: 'period1w',
+        header: '近1周',
+        size: 88,
+        minSize: 72,
+        cell: (info) => {
+          const original = info.row.original || {};
+          const code = original.code;
+          const value = code ? periodReturnsByCode[code]?.week : null;
+          const cls = value > 0 ? 'up' : value < 0 ? 'down' : '';
+          const text = value != null && Number.isFinite(value)
+            ? `${value > 0 ? '+' : ''}${value.toFixed(2)}%`
+            : '—';
+          return (
+            <div style={{ textAlign: 'right' }}>
+              <FitText className={cls} style={{ fontWeight: 700 }} maxFontSize={14} minFontSize={10} as="div">
+                {text}
+              </FitText>
+            </div>
+          );
+        },
+        meta: { align: 'right', cellClassName: 'period-return-cell' },
+      },
+      {
+        id: 'period1m',
+        header: '近1月',
+        size: 88,
+        minSize: 72,
+        cell: (info) => {
+          const original = info.row.original || {};
+          const code = original.code;
+          const value = code ? periodReturnsByCode[code]?.month : null;
+          const cls = value > 0 ? 'up' : value < 0 ? 'down' : '';
+          const text = value != null && Number.isFinite(value)
+            ? `${value > 0 ? '+' : ''}${value.toFixed(2)}%`
+            : '—';
+          return (
+            <div style={{ textAlign: 'right' }}>
+              <FitText className={cls} style={{ fontWeight: 700 }} maxFontSize={14} minFontSize={10} as="div">
+                {text}
+              </FitText>
+            </div>
+          );
+        },
+        meta: { align: 'right', cellClassName: 'period-return-cell' },
+      },
+      {
+        id: 'period3m',
+        header: '近3月',
+        size: 88,
+        minSize: 72,
+        cell: (info) => {
+          const original = info.row.original || {};
+          const code = original.code;
+          const value = code ? periodReturnsByCode[code]?.month3 : null;
+          const cls = value > 0 ? 'up' : value < 0 ? 'down' : '';
+          const text = value != null && Number.isFinite(value)
+            ? `${value > 0 ? '+' : ''}${value.toFixed(2)}%`
+            : '—';
+          return (
+            <div style={{ textAlign: 'right' }}>
+              <FitText className={cls} style={{ fontWeight: 700 }} maxFontSize={14} minFontSize={10} as="div">
+                {text}
+              </FitText>
+            </div>
+          );
+        },
+        meta: { align: 'right', cellClassName: 'period-return-cell' },
+      },
+      {
+        id: 'period6m',
+        header: '近6月',
+        size: 88,
+        minSize: 72,
+        cell: (info) => {
+          const original = info.row.original || {};
+          const code = original.code;
+          const value = code ? periodReturnsByCode[code]?.month6 : null;
+          const cls = value > 0 ? 'up' : value < 0 ? 'down' : '';
+          const text = value != null && Number.isFinite(value)
+            ? `${value > 0 ? '+' : ''}${value.toFixed(2)}%`
+            : '—';
+          return (
+            <div style={{ textAlign: 'right' }}>
+              <FitText className={cls} style={{ fontWeight: 700 }} maxFontSize={14} minFontSize={10} as="div">
+                {text}
+              </FitText>
+            </div>
+          );
+        },
+        meta: { align: 'right', cellClassName: 'period-return-cell' },
+      },
+      {
+        id: 'period1y',
+        header: '近1年',
+        size: 88,
+        minSize: 72,
+        cell: (info) => {
+          const original = info.row.original || {};
+          const code = original.code;
+          const value = code ? periodReturnsByCode[code]?.year1 : null;
+          const cls = value > 0 ? 'up' : value < 0 ? 'down' : '';
+          const text = value != null && Number.isFinite(value)
+            ? `${value > 0 ? '+' : ''}${value.toFixed(2)}%`
+            : '—';
+          return (
+            <div style={{ textAlign: 'right' }}>
+              <FitText className={cls} style={{ fontWeight: 700 }} maxFontSize={14} minFontSize={10} as="div">
+                {text}
+              </FitText>
+            </div>
+          );
+        },
+        meta: { align: 'right', cellClassName: 'period-return-cell' },
+      },
+      {
         accessorKey: 'latestNav',
         header: '最新净值',
         size: 100,
@@ -774,7 +962,7 @@ export default function PcFundTable({
       },
       {
         accessorKey: 'yesterdayChangePercent',
-        header: '昨日涨幅',
+        header: '最新涨幅',
         size: 135,
         minSize: 100,
         cell: (info) => {
@@ -983,6 +1171,42 @@ export default function PcFundTable({
         },
       },
       {
+        accessorKey: 'yesterdayProfit',
+        header: '昨日收益',
+        size: 135,
+        minSize: 100,
+        cell: (info) => {
+          const original = info.row.original || {};
+          const value = original.yesterdayProfitValue;
+          const hasProfit = value != null;
+          const cls = hasProfit ? (value > 0 ? 'up' : value < 0 ? 'down' : '') : 'muted';
+          const amountStr = hasProfit ? (info.getValue() ?? '') : '—';
+          const percentStr = original.yesterdayProfitPercent ?? '';
+          const pctVal = original.yesterdaySecondLinePctValue;
+          const pctCls = pctVal != null && Number.isFinite(pctVal)
+            ? (pctVal > 0 ? 'up' : pctVal < 0 ? 'down' : '')
+            : 'muted';
+          return (
+            <div style={{ width: '100%' }}>
+              <FitText className={cls} style={{ fontWeight: 700, display: 'block' }} maxFontSize={14} minFontSize={10}>
+                {masked && hasProfit ? <span className="mask-text">******</span> : amountStr}
+              </FitText>
+              {percentStr && !masked ? (
+                <span className={`${pctCls} yesterday-profit-percent`} style={{ display: 'block', fontSize: '0.75em', opacity: 0.9, fontWeight: 500 }}>
+                  <FitText maxFontSize={11} minFontSize={9}>
+                    {percentStr}
+                  </FitText>
+                </span>
+              ) : null}
+            </div>
+          );
+        },
+        meta: {
+          align: 'right',
+          cellClassName: 'yesterday-profit-cell',
+        },
+      },
+      {
         accessorKey: 'holdingProfit',
         header: '持有收益',
         size: 135,
@@ -1072,7 +1296,7 @@ export default function PcFundTable({
         },
       },
     ],
-    [currentTab, favorites, refreshing, sortBy, showFullFundName, getFundCardProps, masked, relatedSectorByCode, sectorQuoteByLabel],
+    [currentTab, favorites, refreshing, sortBy, showFullFundName, getFundCardProps, masked, relatedSectorByCode, sectorQuoteByLabel, periodReturnsByCode],
   );
 
   const table = useReactTable({

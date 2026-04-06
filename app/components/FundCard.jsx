@@ -215,7 +215,7 @@ export default function FundCard({
 
               if (shouldHideChange) return null;
 
-              const changeLabel = hasTodayData ? '涨跌幅' : '昨日涨幅';
+              const changeLabel = hasTodayData ? '涨跌幅' : '最新涨幅';
               return (
                 <Stat
                   label={changeLabel}

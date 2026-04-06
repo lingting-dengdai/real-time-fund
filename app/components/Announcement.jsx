@@ -76,7 +76,7 @@ export default function Announcement() {
             </div>
             <div style={{ color: 'var(--text)', lineHeight: '1.6', fontSize: '15px', overflowY: 'auto', minHeight: 0, flex: 1, paddingRight: '4px' }}>
               <p>v0.2.9 更新内容：</p>
-              <p>1. 排序新增按昨日涨幅排序。</p>
+              <p>1. 排序新增按最新涨幅排序。</p>
               <p>2. 排序个性化设置支持切换排序形式。</p>
               <p>3. 全局设置新增显示/隐藏大盘指数。</p>
               <p>4. 新增持有天数。</p>
