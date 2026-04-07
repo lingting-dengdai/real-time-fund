@@ -627,6 +627,37 @@ export default function PcFundTable({
     return () => { cancelled = true; };
   }, [relatedSectorEnabled, data, relatedSectorByCode]);
 
+  const withRelatedSectorFund = useCallback(
+    (row) => {
+      if (!row || !row.code) return row;
+      const rawValue = relatedSectorByCode?.[row.code] ?? relatedSectorCacheRef.current.get(row.code) ?? '';
+      const relatedSector = rawValue != null ? String(rawValue).trim() : '';
+      const quote = relatedSector ? sectorQuoteByLabel?.[relatedSector] : null;
+      const quoteName = quote?.name != null ? String(quote.name).trim() : '';
+      const quotePct = quote?.pct == null ? null : Number(quote.pct);
+      const hasQuotePct = quotePct != null && Number.isFinite(quotePct);
+
+      return {
+        ...row,
+        rawFund: {
+          ...(row.rawFund || { code: row.code, name: row.fundName }),
+          relatedSector,
+          relatedSectorQuoteName: quoteName,
+          relatedSectorQuotePct: hasQuotePct ? quotePct : null,
+        },
+      };
+    },
+    [relatedSectorByCode, sectorQuoteByLabel],
+  );
+
+  const getFundCardPropsWithRelatedSector = useCallback(
+    (row) => {
+      if (!getFundCardProps) return {};
+      return getFundCardProps(withRelatedSectorFund(row));
+    },
+    [getFundCardProps, withRelatedSectorFund],
+  );
+
   const periodReturnsEnabled =
     columnVisibility?.period1w !== false
     || columnVisibility?.period1m !== false
@@ -1738,7 +1769,12 @@ export default function PcFundTable({
         )}
       </div>
       {!!(cardDialogRow && getFundCardProps) && (
-        <FundDetailDialog blockDialogClose={blockDialogClose} cardDialogRow={cardDialogRow} getFundCardProps={getFundCardProps} setCardDialogRow={setCardDialogRow} />
+        <FundDetailDialog
+          blockDialogClose={blockDialogClose}
+          cardDialogRow={cardDialogRow}
+          getFundCardProps={getFundCardPropsWithRelatedSector}
+          setCardDialogRow={setCardDialogRow}
+        />
       )}
       <PcTableSettingModal
         open={settingModalOpen}
