@@ -33,6 +33,7 @@ export function DatePicker({ value, onChange, position = 'bottom' }) {
   const [open, setOpen] = useState(false);
   const today = nowInTz().startOf('day');
   const selected = value ? toTz(value).toDate() : undefined;
+  const weekdayLabels = ['日', '一', '二', '三', '四', '五', '六'];
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -56,6 +57,9 @@ export function DatePicker({ value, onChange, position = 'bottom' }) {
           selected={selected}
           defaultMonth={selected}
           captionLayout="dropdown"
+          formatters={{
+            formatWeekdayName: (date) => weekdayLabels[date.getDay()],
+          }}
           classNames={{
             dropdown_root:
               "relative rounded-md border-0 shadow-none has-focus:border-0 has-focus:ring-0",

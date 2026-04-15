@@ -5,6 +5,8 @@ import { motion, useReducedMotion } from 'framer-motion';
 import dayjs from 'dayjs';
 import 'dayjs/locale/zh-cn';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { Calendar, CalendarDayButton } from '@/components/ui/calendar';
+import { zhCN } from 'date-fns/locale/zh-CN';
 import {
   Dialog,
   DialogClose,
@@ -25,28 +27,7 @@ import { cn } from '@/lib/utils';
 
 dayjs.locale('zh-cn');
 
-const WEEK_LABELS = ['日', '一', '二', '三', '四', '五', '六'];
 const SWIPE_THRESHOLD = 72;
-
-function buildMonthCells(viewMonth) {
-  const start = viewMonth.startOf('month');
-  const daysInMonth = viewMonth.daysInMonth();
-  const startWeek = start.day();
-  const cells = [];
-  for (let i = 0; i < startWeek; i++) {
-    cells.push({ date: start.subtract(startWeek - i, 'day'), inMonth: false });
-  }
-  for (let d = 1; d <= daysInMonth; d++) {
-    cells.push({ date: viewMonth.date(d), inMonth: true });
-  }
-  const remainder = cells.length % 7;
-  const tail = remainder === 0 ? 0 : 7 - remainder;
-  const last = viewMonth.date(daysInMonth);
-  for (let i = 1; i <= tail; i++) {
-    cells.push({ date: last.add(i, 'day'), inMonth: false });
-  }
-  return cells;
-}
 
 function formatEarnings(v, masked) {
   if (masked) return '***';
@@ -61,6 +42,8 @@ function earningsClass(v) {
   if (v < 0) return 'down';
   return '';
 }
+
+const WEEKDAY_LABELS = ['日', '一', '二', '三', '四', '五', '六'];
 
 export default function MyEarningsCalendarPage({ open, onOpenChange, series = [], masked, onGoHome, isMobile }) {
   const reduceMotion = useReducedMotion();
@@ -148,7 +131,6 @@ export default function MyEarningsCalendarPage({ open, onOpenChange, series = []
   );
 
   const enableSwipe = viewTab === 'day' || viewTab === 'month';
-  const monthCells = useMemo(() => buildMonthCells(cursorMonth), [cursorMonth]);
 
   const yearSum = monthTotalsForYear.reduce((a, b) => a + b, 0);
 
@@ -307,55 +289,106 @@ export default function MyEarningsCalendarPage({ open, onOpenChange, series = []
               <div className="my-earnings-calendar-card">
                 {viewTab === 'day' && (
                   <>
-                    <div className="my-earnings-weekdays">
-                      {WEEK_LABELS.map((w) => (
-                        <span key={w}>{w}</span>
-                      ))}
-                    </div>
-                    <div className="my-earnings-grid">
-                      {monthCells.map(({ date, inMonth }) => {
-                        const key = date.format('YYYY-MM-DD');
-                        const dayEarnings = inMonth ? earningsByDate.get(key) : undefined;
-                        const hasEarnings =
-                          typeof dayEarnings === 'number' && Number.isFinite(dayEarnings);
-                        const isFutureDay =
-                          inMonth && date.startOf('day').isAfter(dayjs().startOf('day'));
-                        const earningsTone =
-                          hasEarnings && dayEarnings > 0
-                            ? 'up'
-                            : hasEarnings && dayEarnings < 0
-                              ? 'down'
-                              : 'zero';
-                        const showEarningsRow = inMonth && !isFutureDay;
-                        return (
-                          <div
-                            key={`${key}-${inMonth}`}
-                            className={cn(
-                              'my-earnings-cell',
-                              !inMonth && 'my-earnings-cell-outside'
-                            )}
-                            aria-hidden={!inMonth}
-                          >
-                            <span className="my-earnings-cell-num">{date.date()}</span>
-                            {showEarningsRow && (
-                              <FitText
-                                as="span"
-                                maxFontSize={10}
-                                minFontSize={7}
-                                className={cn(
-                                  'my-earnings-cell-earnings',
-                                  earningsTone === 'up' && 'up',
-                                  earningsTone === 'down' && 'down',
-                                  earningsTone === 'zero' && 'my-earnings-cell-earnings-zero'
-                                )}
-                              >
-                                {formatEarnings(hasEarnings ? dayEarnings : 0, masked)}
-                              </FitText>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
+                    <Calendar
+                      mode="single"
+                      month={cursorMonth.toDate()}
+                      onMonthChange={(d) => setCursorMonth(dayjs(d).startOf('month'))}
+                      toMonth={new Date()}
+                      showOutsideDays
+                      hideNavigation
+                      captionLayout="label"
+                      locale={zhCN}
+                      formatters={{
+                        formatWeekdayName: (date) => WEEKDAY_LABELS[date.getDay()],
+                      }}
+                      style={{
+                        // 让 7 列宽度跟随父容器伸缩，而不是固定 cell-size
+                        '--cell-size': 'calc((100% - 12px) / 7)',
+                      }}
+                      className="w-full bg-transparent p-0"
+                      classNames={{
+                        root: 'w-full',
+                        months: 'w-full',
+                        month: 'w-full gap-2',
+                        month_grid: 'w-full',
+                        month_caption: 'hidden',
+                        nav: 'hidden',
+                        table: 'w-full border-collapse table-fixed',
+                        tbody: 'w-full',
+                        weekdays: 'flex',
+                        weekday:
+                          'flex-1 rounded-md text-[0.8rem] font-normal text-muted-foreground select-none',
+                        week: 'mt-2 flex w-full',
+                        day: cn(
+                          'relative aspect-square h-full w-full p-0 text-center select-none',
+                          '[&:last-child[data-selected=true]_button]:rounded-r-md'
+                        ),
+                        today: 'bg-transparent text-inherit',
+                      }}
+                      components={{
+                        DayButton: ({ children, modifiers, day, ...props }) => {
+                          const key = dayjs(day.date).format('YYYY-MM-DD');
+                          const isOutside = !!modifiers?.outside;
+                          const isToday = !isOutside && dayjs(day.date).isSame(dayjs(), 'day');
+                          const isFutureDay = dayjs(day.date).startOf('day').isAfter(dayjs().startOf('day'));
+
+                          const dayEarnings = !isOutside ? earningsByDate.get(key) : undefined;
+                          const hasEarnings =
+                            typeof dayEarnings === 'number' && Number.isFinite(dayEarnings);
+
+                          const earningsTone =
+                            hasEarnings && dayEarnings > 0
+                              ? 'up'
+                              : hasEarnings && dayEarnings < 0
+                                ? 'down'
+                                : 'zero';
+
+                          const showEarningsRow = !isFutureDay;
+                          const bgToneClass = showEarningsRow
+                            ? (hasEarnings
+                              ? (dayEarnings > 0
+                                ? '!bg-[color-mix(in_srgb,var(--danger)_18%,transparent)] hover:!bg-[color-mix(in_srgb,var(--danger)_24%,transparent)]'
+                                : dayEarnings < 0
+                                  ? '!bg-[color-mix(in_srgb,var(--success)_18%,transparent)] hover:!bg-[color-mix(in_srgb,var(--success)_24%,transparent)]'
+                                  : '!bg-[color-mix(in_srgb,var(--muted-foreground)_8%,transparent)] hover:!bg-[color-mix(in_srgb,var(--muted-foreground)_12%,transparent)]')
+                              : '!bg-[color-mix(in_srgb,var(--muted-foreground)_8%,transparent)] hover:!bg-[color-mix(in_srgb,var(--muted-foreground)_12%,transparent)]')
+                            : '';
+
+                          return (
+                            <CalendarDayButton
+                              day={day}
+                              modifiers={modifiers}
+                              {...props}
+                              style={{ ...(props.style || {}), borderRadius: 2 }}
+                              className={cn(
+                                'my-earnings-cell',
+                                isOutside && 'my-earnings-cell-outside'
+                                ,
+                                '!min-w-0',
+                                bgToneClass
+                              )}
+                            >
+                              <span className="my-earnings-cell-num">{isToday ? '今' : children}</span>
+                              {showEarningsRow && (
+                                <FitText
+                                  as="span"
+                                  maxFontSize={10}
+                                  minFontSize={7}
+                                  className={cn(
+                                    'my-earnings-cell-earnings',
+                                    earningsTone === 'up' && 'up',
+                                    earningsTone === 'down' && 'down',
+                                    earningsTone === 'zero' && 'my-earnings-cell-earnings-zero'
+                                  )}
+                                >
+                                  {formatEarnings(hasEarnings ? dayEarnings : 0, masked)}
+                                </FitText>
+                              )}
+                            </CalendarDayButton>
+                          );
+                        },
+                      }}
+                    />
                   </>
                 )}
 
