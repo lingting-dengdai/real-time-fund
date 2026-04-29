@@ -88,7 +88,7 @@ import {
 } from './lib/dailyEarnings';
 import { loadHolidaysForYears, isTradingDay as isDateTradingDay } from './lib/tradingCalendar';
 import { asyncPool } from './lib/asyncHelper';
-import { parseFundTextWithLLM, fetchFundData, fetchFundNetValueRange, fetchLatestRelease, fetchShanghaiIndexDate, fetchSmartFundNetValue, searchFunds, fetchFundPeriodReturns } from './api/fund';
+import { parseFundTextWithLLM, fetchFundData, fetchFundNetValueRange, fetchLatestRelease, fetchShanghaiIndexDate, fetchSmartFundNetValue, fetchSmartFundNetValueBackward, searchFunds, fetchFundPeriodReturns } from './api/fund';
 import packageJson from '../package.json';
 import PcFundTable from './components/PcFundTable';
 import MobileFundTable from './components/MobileFundTable';
@@ -2180,7 +2180,13 @@ export default function HomePage() {
       }
 
       // 尝试获取智能净值
-      const result = await fetchSmartFundNetValue(trade.fundCode, queryDate);
+      const navOffsetDays = Number(trade.navOffsetDays);
+      if (Number.isFinite(navOffsetDays) && navOffsetDays) {
+        queryDate = toTz(queryDate).add(navOffsetDays, 'day').format('YYYY-MM-DD');
+      }
+      const result = (trade.netValueSearch === 'backward')
+        ? await fetchSmartFundNetValueBackward(trade.fundCode, queryDate)
+        : await fetchSmartFundNetValue(trade.fundCode, queryDate);
 
       if (result && result.value > 0) {
         // 成功获取，执行交易
@@ -8297,6 +8303,8 @@ export default function HomePage() {
                 feeMode: 'none',
                 feeValue: 0,
                 date: payload.date,
+                navOffsetDays: -1,
+                netValueSearch: 'backward',
                 isAfter3pm: false,
                 isDca: false,
                 timestamp: nowTs,
@@ -8314,6 +8322,8 @@ export default function HomePage() {
                 feeMode: 'none',
                 feeValue: 0,
                 date: payload.date,
+                navOffsetDays: -1,
+                netValueSearch: 'backward',
                 isAfter3pm: false,
                 isDca: false,
                 timestamp: nowTs + 1,
