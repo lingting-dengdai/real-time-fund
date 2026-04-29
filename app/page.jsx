@@ -43,7 +43,6 @@ import {
   SettingsIcon,
   SortIcon,
   SunIcon,
-  UpdateIcon,
   UserIcon,
   CameraIcon,
   FolderPlusIcon,
@@ -68,7 +67,7 @@ import SuccessModal from "./components/SuccessModal";
 import TradeModal from "./components/TradeModal";
 import TransactionHistoryModal from "./components/TransactionHistoryModal";
 import AddHistoryModal from "./components/AddHistoryModal";
-import UpdatePromptModal from "./components/UpdatePromptModal";
+import UpdateChecker from "./components/UpdateChecker";
 import RefreshButton from "./components/RefreshButton";
 import WeChatModal from "./components/WeChatModal";
 import DcaModal from "./components/DcaModal";
@@ -88,8 +87,7 @@ import {
 } from './lib/dailyEarnings';
 import { loadHolidaysForYears, isTradingDay as isDateTradingDay } from './lib/tradingCalendar';
 import { asyncPool } from './lib/asyncHelper';
-import { parseFundTextWithLLM, fetchFundData, fetchFundNetValueRange, fetchLatestRelease, fetchShanghaiIndexDate, fetchSmartFundNetValue, fetchSmartFundNetValueBackward, searchFunds, fetchFundPeriodReturns } from './api/fund';
-import packageJson from '../package.json';
+import { parseFundTextWithLLM, fetchFundData, fetchFundNetValueRange, fetchShanghaiIndexDate, fetchSmartFundNetValue, fetchSmartFundNetValueBackward, searchFunds, fetchFundPeriodReturns } from './api/fund';
 import PcFundTable from './components/PcFundTable';
 import MobileFundTable from './components/MobileFundTable';
 import FundTagsEditDialog from './components/FundTagsEditDialog';
@@ -608,35 +606,7 @@ export default function HomePage() {
     if (!shouldShowMarketIndex) setMarketIndexAccordionHeight(0);
   }, [shouldShowMarketIndex]);
 
-  // 检查更新
-  const [hasUpdate, setHasUpdate] = useState(false);
-  const [latestVersion, setLatestVersion] = useState('');
-  const [updateContent, setUpdateContent] = useState('');
   const [isSyncing, setIsSyncing] = useState(false);
-
-  useEffect(() => {
-    // 未配置 GitHub 最新版本接口地址时，不进行更新检查
-    if (!process.env.NEXT_PUBLIC_GITHUB_LATEST_RELEASE_URL) return;
-
-    const checkUpdate = async () => {
-      try {
-        const data = await fetchLatestRelease();
-        if (!data?.tagName) return;
-        const remoteVersion = data.tagName.replace(/^v/, '');
-        if (remoteVersion !== packageJson.version) {
-          setHasUpdate(true);
-          setLatestVersion(remoteVersion);
-          setUpdateContent(data.body || '');
-        }
-      } catch (e) {
-        console.error('Check update failed:', e);
-      }
-    };
-
-    checkUpdate();
-    const interval = setInterval(checkUpdate, 30 * 60 * 1000); // 30 minutes
-    return () => clearInterval(interval);
-  }, []);
 
   // 存储当前被划开的基金代码
   const [swipedFundCode, setSwipedFundCode] = useState(null);
@@ -2544,7 +2514,7 @@ export default function HomePage() {
     setLoginModalOpen(true);
   };
 
-  const [updateModalOpen, setUpdateModalOpen] = useState(false);
+  const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
   const [scanModalOpen, setScanModalOpen] = useState(false); // 扫描弹窗
   const [scanConfirmModalOpen, setScanConfirmModalOpen] = useState(false); // 扫描确认弹窗
   const [scannedFunds, setScannedFunds] = useState([]); // 扫描到的基金
@@ -6742,7 +6712,7 @@ export default function HomePage() {
       donateOpen ||
       !!fundDeleteConfirm ||
       !!fundDeleteBulkConfirm ||
-      updateModalOpen ||
+      isUpdateModalOpen ||
       weChatOpen ||
       scanModalOpen ||
       scanConfirmModalOpen ||
@@ -6774,7 +6744,7 @@ export default function HomePage() {
       clearConfirm,
       donateOpen,
       fundDeleteConfirm,
-      updateModalOpen,
+      isUpdateModalOpen,
       weChatOpen,
       scanModalOpen,
       scanConfirmModalOpen,
@@ -7194,16 +7164,7 @@ export default function HomePage() {
           {error && <div className="muted" style={{ marginTop: 8, color: 'var(--danger)' }}>{error}</div>}
         </div>
         <div className={`actions ${(isSearchFocused || selectedFunds.length > 0) ? 'search-focused-sibling' : ''}`}>
-          {hasUpdate && (
-            <div
-              className="badge"
-              title={`发现新版本 ${latestVersion}，点击前往下载`}
-              style={{ cursor: 'pointer', borderColor: 'var(--success)', color: 'var(--success)' }}
-              onClick={() => setUpdateModalOpen(true)}
-            >
-              <UpdateIcon width="14" height="14" />
-            </div>
-          )}
+          <UpdateChecker onModalOpenChange={setIsUpdateModalOpen} />
           <span className="github-icon-wrap">
             <Image unoptimized alt="项目Github地址" src={githubImg} style={{ width: '30px', height: '30px', cursor: 'pointer' }} onClick={() => window.open("https://github.com/hzm0321/real-time-fund")} />
           </span>
@@ -8619,18 +8580,6 @@ export default function HomePage() {
             showMarketIndexMobile={showMarketIndexMobile}
             showGroupFundSearchPc={showGroupFundSearchPc}
             showGroupFundSearchMobile={showGroupFundSearchMobile}
-          />
-        )}
-      </AnimatePresence>
-
-      {/* 更新提示弹窗 */}
-      <AnimatePresence>
-        {updateModalOpen && (
-          <UpdatePromptModal
-            open={updateModalOpen}
-            updateContent={updateContent}
-            onClose={() => setUpdateModalOpen(false)}
-            onRefresh={() => window.location.reload()}
           />
         )}
       </AnimatePresence>
