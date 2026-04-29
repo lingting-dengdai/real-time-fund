@@ -1181,6 +1181,26 @@ export default function HomePage() {
     return { derived, linked, groupIdsByCode };
   }, [currentTab, activeGroupId, funds, holdings, groupHoldings, groups]);
 
+  useEffect(() => {
+    const linkedCodes = linkedHoldingsForAllFav?.linked;
+    if (!(linkedCodes instanceof Set) || linkedCodes.size === 0) return;
+    setFundDailyEarnings((prev) => {
+      if (!isPlainObject(prev)) return prev;
+      const globalBucket = prev[DAILY_EARNINGS_SCOPE_ALL];
+      if (!isPlainObject(globalBucket)) return prev;
+      const nextGlobalBucket = { ...globalBucket };
+      let changed = false;
+      for (const code of linkedCodes) {
+        if (code in nextGlobalBucket) {
+          delete nextGlobalBucket[code];
+          changed = true;
+        }
+      }
+      if (!changed) return prev;
+      return { ...prev, [DAILY_EARNINGS_SCOPE_ALL]: nextGlobalBucket };
+    });
+  }, [linkedHoldingsForAllFav, setFundDailyEarnings]);
+
   const currentFundDailyEarnings = useMemo(() => {
     if (!isPlainObject(fundDailyEarnings)) return {};
 
@@ -1293,31 +1313,23 @@ export default function HomePage() {
   const portfolioDailySeries = useMemo(
     () => {
       if (!isPlainObject(fundDailyEarnings)) return [];
-      const mergedByCode = {};
+      const byDate = new Map();
       Object.values(fundDailyEarnings).forEach((bucket) => {
         if (!isPlainObject(bucket)) return;
-        Object.entries(bucket).forEach(([code, list]) => {
+        Object.values(bucket).forEach((list) => {
           if (!Array.isArray(list) || list.length === 0) return;
-          const prev = Array.isArray(mergedByCode[code]) ? mergedByCode[code] : [];
-          // 按 scope 合并后按日期去重，避免同一基金同一天重复累计
-          const byDate = new Map();
-          [...prev, ...list].forEach((item) => {
+          list.forEach((item) => {
             const date = item?.date ? String(item.date) : '';
             const earnings = Number(item?.earnings);
-            const rateRaw = item?.rate;
-            const rate = rateRaw == null || rateRaw === '' ? null : Number(rateRaw);
             if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
             if (!Number.isFinite(earnings)) return;
-            byDate.set(date, {
-              date,
-              earnings,
-              rate: Number.isFinite(rate) ? rate : null,
-            });
+            byDate.set(date, (byDate.get(date) ?? 0) + earnings);
           });
-          mergedByCode[code] = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
         });
       });
-      return aggregatePortfolioDailyEarnings(mergedByCode);
+      return [...byDate.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([date, earnings]) => ({ date, earnings, rate: null }));
     },
     [fundDailyEarnings]
   );
