@@ -818,7 +818,8 @@ export default function HomePage() {
     return {
       amount,
       profitToday,
-      profitTotal
+      profitTotal,
+      principalToday: isNumber(holding.cost) ? holding.cost * shareForTodayProfit : 0
     };
   }, [isTradingDay, todayStr, transactions, activeGroupId]);
 
@@ -844,6 +845,7 @@ export default function HomePage() {
     let totalProfitToday = 0;
     let totalHoldingReturn = 0;
     let totalCost = 0;
+    let totalPrincipalToday = 0;
     let hasHolding = false;
     let hasAnyTodayData = false;
 
@@ -855,6 +857,7 @@ export default function HomePage() {
       totalAsset += Math.round(p.amount * 100) / 100;
       if (p.profitToday != null) {
         totalProfitToday += p.profitToday;
+        totalPrincipalToday += (p.principalToday || 0);
         hasAnyTodayData = true;
       }
       if (p.profitTotal != null) {
@@ -878,7 +881,7 @@ export default function HomePage() {
 
     const roundedTotalProfitToday = Math.round(totalProfitToday * 100) / 100;
     const returnRate = totalCost > 0 ? (totalHoldingReturn / totalCost) * 100 : 0;
-    const todayReturnRate = totalCost > 0 ? (roundedTotalProfitToday / totalCost) * 100 : 0;
+    const todayReturnRate = totalPrincipalToday > 0 ? (roundedTotalProfitToday / totalPrincipalToday) * 100 : 0;
 
     return {
       totalAsset,
@@ -969,6 +972,7 @@ export default function HomePage() {
       let totalHoldingReturn = 0;
       let totalCost = 0;
       let totalProfitToday = 0;
+      let totalPrincipalToday = 0;
       let hasAnyTodayData = false;
       let upCount = 0;
       let downCount = 0;
@@ -981,6 +985,7 @@ export default function HomePage() {
         totalAsset += Math.round(profit.amount * 100) / 100;
         if (profit.profitToday != null) {
           totalProfitToday += profit.profitToday;
+          totalPrincipalToday += (profit.principalToday || 0);
           hasAnyTodayData = true;
         }
         if (profit.profitTotal !== null) {
@@ -1002,7 +1007,7 @@ export default function HomePage() {
 
       const roundedToday = Math.round(totalProfitToday * 100) / 100;
       const returnRate = totalCost > 0 ? (totalHoldingReturn / totalCost) * 100 : 0;
-      const todayReturnRate = totalCost > 0 ? (roundedToday / totalCost) * 100 : 0;
+      const todayReturnRate = totalPrincipalToday > 0 ? (roundedToday / totalPrincipalToday) * 100 : 0;
       const scopeDaily = isPlainObject(fundDailyEarnings?.[DAILY_EARNINGS_SCOPE_ALL])
         ? fundDailyEarnings[DAILY_EARNINGS_SCOPE_ALL]
         : {};
@@ -1036,6 +1041,7 @@ export default function HomePage() {
       let totalHoldingReturn = 0;
       let totalCost = 0;
       let totalProfitToday = 0;
+      let totalPrincipalToday = 0;
       let hasAnyTodayData = false;
       let upCount = 0;
       let downCount = 0;
@@ -1047,6 +1053,7 @@ export default function HomePage() {
           totalAsset += Math.round(profit.amount * 100) / 100;
           if (profit.profitToday != null) {
             totalProfitToday += profit.profitToday;
+            totalPrincipalToday += (profit.principalToday || 0);
             hasAnyTodayData = true;
           }
           if (profit.profitTotal !== null) {
@@ -1069,7 +1076,7 @@ export default function HomePage() {
 
       const roundedToday = Math.round(totalProfitToday * 100) / 100;
       const returnRate = totalCost > 0 ? (totalHoldingReturn / totalCost) * 100 : 0;
-      const todayReturnRate = totalCost > 0 ? (roundedToday / totalCost) * 100 : 0;
+      const todayReturnRate = totalPrincipalToday > 0 ? (roundedToday / totalPrincipalToday) * 100 : 0;
 
       const scopeDaily = isPlainObject(fundDailyEarnings?.[g.id]) ? fundDailyEarnings[g.id] : {};
       const dailySeries = aggregatePortfolioDailyEarnings(scopeDaily);
@@ -1117,44 +1124,6 @@ export default function HomePage() {
       return getHoldingProfit(fund, holding);
     },
     [currentTab, summaryHoldingSourceGroupByCode, getHoldingProfit]
-  );
-
-  const dailyEarningsScope = activeGroupId || DAILY_EARNINGS_SCOPE_ALL;
-  const currentFundDailyEarnings = useMemo(() => {
-    if (!isPlainObject(fundDailyEarnings)) return {};
-    const scoped = fundDailyEarnings[dailyEarningsScope];
-    return isPlainObject(scoped) ? scoped : {};
-  }, [fundDailyEarnings, dailyEarningsScope]);
-  const portfolioDailySeries = useMemo(
-    () => {
-      if (!isPlainObject(fundDailyEarnings)) return [];
-      const mergedByCode = {};
-      Object.values(fundDailyEarnings).forEach((bucket) => {
-        if (!isPlainObject(bucket)) return;
-        Object.entries(bucket).forEach(([code, list]) => {
-          if (!Array.isArray(list) || list.length === 0) return;
-          const prev = Array.isArray(mergedByCode[code]) ? mergedByCode[code] : [];
-          // 按 scope 合并后按日期去重，避免同一基金同一天重复累计
-          const byDate = new Map();
-          [...prev, ...list].forEach((item) => {
-            const date = item?.date ? String(item.date) : '';
-            const earnings = Number(item?.earnings);
-            const rateRaw = item?.rate;
-            const rate = rateRaw == null || rateRaw === '' ? null : Number(rateRaw);
-            if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
-            if (!Number.isFinite(earnings)) return;
-            byDate.set(date, {
-              date,
-              earnings,
-              rate: Number.isFinite(rate) ? rate : null,
-            });
-          });
-          mergedByCode[code] = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
-        });
-      });
-      return aggregatePortfolioDailyEarnings(mergedByCode);
-    },
-    [fundDailyEarnings]
   );
 
   /**
@@ -1211,6 +1180,147 @@ export default function HomePage() {
 
     return { derived, linked, groupIdsByCode };
   }, [currentTab, activeGroupId, funds, holdings, groupHoldings, groups]);
+
+  const currentFundDailyEarnings = useMemo(() => {
+    if (!isPlainObject(fundDailyEarnings)) return {};
+
+    const getScopeBucket = (scopeKey) => {
+      const scoped = fundDailyEarnings[scopeKey];
+      return isPlainObject(scoped) ? scoped : {};
+    };
+
+    if (activeGroupId) {
+      return getScopeBucket(activeGroupId);
+    }
+
+    if (currentTab === SUMMARY_TAB_ID) {
+      const out = {};
+      Object.entries(summaryHoldingSourceGroupByCode || {}).forEach(([code, source]) => {
+        const scopeKey = source === SUMMARY_SOURCE_GLOBAL ? DAILY_EARNINGS_SCOPE_ALL : source;
+        const bucket = getScopeBucket(scopeKey);
+        const list = bucket[code];
+        if (Array.isArray(list) && list.length > 0) out[code] = list;
+      });
+      return out;
+    }
+
+    const globalBucket = getScopeBucket(DAILY_EARNINGS_SCOPE_ALL);
+
+    if (currentTab !== 'all' && currentTab !== 'fav') {
+      return globalBucket;
+    }
+
+    const linkedCodes = linkedHoldingsForAllFav?.linked;
+    if (!(linkedCodes instanceof Set) || linkedCodes.size === 0) {
+      return globalBucket;
+    }
+
+    const out = { ...globalBucket };
+    const groupIdsByCode = linkedHoldingsForAllFav?.groupIdsByCode || {};
+
+    for (const code of linkedCodes) {
+      const groupIds = Array.isArray(groupIdsByCode[code]) ? groupIdsByCode[code] : [];
+      if (groupIds.length === 0) continue;
+
+      let fallbackPrincipalCurrent = 0;
+      for (const gid of groupIds) {
+        const h = groupHoldings?.[gid]?.[code];
+        if (!h) continue;
+        const share = Number(h.share);
+        const cost = Number(h.cost);
+        if (!Number.isFinite(share) || share <= 0) continue;
+        if (!Number.isFinite(cost) || cost <= 0) continue;
+        fallbackPrincipalCurrent += cost * share;
+      }
+
+      const byDate = new Map();
+      for (const gid of groupIds) {
+        const bucket = getScopeBucket(gid);
+        const list = bucket[code];
+        if (!Array.isArray(list) || list.length === 0) continue;
+
+        for (const item of list) {
+          const date = item?.date ? String(item.date) : '';
+          const earnings = Number(item?.earnings);
+          const rate = Number(item?.rate);
+          const baseCostAmount = Number(item?.baseCostAmount);
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+          if (!Number.isFinite(earnings)) continue;
+          const prev = byDate.get(date) || { earnings: 0, rowCount: 0, singleRate: null, rateCount: 0, baseCostAmount: 0 };
+          prev.earnings += earnings;
+          prev.rowCount += 1;
+          if (Number.isFinite(rate)) {
+            prev.rateCount += 1;
+            if (prev.singleRate == null) prev.singleRate = rate;
+          }
+          if (Number.isFinite(baseCostAmount) && baseCostAmount > 0) {
+            prev.baseCostAmount += baseCostAmount;
+          }
+          byDate.set(date, prev);
+        }
+      }
+
+      if (byDate.size > 0) {
+        out[code] = [...byDate.entries()]
+          .sort((a, b) => a[0].localeCompare(b[0]))
+          .map(([date, row]) => {
+            const earnings = row.earnings;
+            const baseCostAmount = Number.isFinite(row.baseCostAmount) && row.baseCostAmount > 0
+              ? row.baseCostAmount
+              : null;
+            let rate = null;
+            if (baseCostAmount != null) {
+              rate = (earnings / baseCostAmount) * 100;
+            } else if (row.rowCount === 1 && row.rateCount === 1 && Number.isFinite(row.singleRate)) {
+              rate = row.singleRate;
+            } else if (Number.isFinite(fallbackPrincipalCurrent) && fallbackPrincipalCurrent > 0) {
+              // 兼容旧数据：历史记录缺少快照且无 rate 时，用当前关联持仓成本兜底展示
+              rate = (earnings / fallbackPrincipalCurrent) * 100;
+            }
+            return { date, earnings, rate, baseCostAmount };
+          });
+      }
+    }
+
+    return out;
+  }, [
+    fundDailyEarnings,
+    activeGroupId,
+    currentTab,
+    summaryHoldingSourceGroupByCode,
+    linkedHoldingsForAllFav,
+  ]);
+  const portfolioDailySeries = useMemo(
+    () => {
+      if (!isPlainObject(fundDailyEarnings)) return [];
+      const mergedByCode = {};
+      Object.values(fundDailyEarnings).forEach((bucket) => {
+        if (!isPlainObject(bucket)) return;
+        Object.entries(bucket).forEach(([code, list]) => {
+          if (!Array.isArray(list) || list.length === 0) return;
+          const prev = Array.isArray(mergedByCode[code]) ? mergedByCode[code] : [];
+          // 按 scope 合并后按日期去重，避免同一基金同一天重复累计
+          const byDate = new Map();
+          [...prev, ...list].forEach((item) => {
+            const date = item?.date ? String(item.date) : '';
+            const earnings = Number(item?.earnings);
+            const rateRaw = item?.rate;
+            const rate = rateRaw == null || rateRaw === '' ? null : Number(rateRaw);
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+            if (!Number.isFinite(earnings)) return;
+            byDate.set(date, {
+              date,
+              earnings,
+              rate: Number.isFinite(rate) ? rate : null,
+            });
+          });
+          mergedByCode[code] = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+        });
+      });
+      return aggregatePortfolioDailyEarnings(mergedByCode);
+    },
+    [fundDailyEarnings]
+  );
 
   const holdingsForTabWithLinked = useMemo(() => {
     if (currentTab === SUMMARY_TAB_ID) return summaryMergedHoldings;
@@ -1661,8 +1771,8 @@ export default function HomePage() {
         const costNav =
           costNavValue == null ? '—' : Number(costNavValue).toFixed(4);
         const todayProfitPercent =
-          profitToday != null && principal > 0
-            ? `${profitToday > 0 ? '+' : profitToday < 0 ? '-' : ''}${Math.abs((profitToday / principal) * 100).toFixed(2)}%`
+          profitToday != null && profit?.principalToday > 0
+            ? `${profitToday > 0 ? '+' : profitToday < 0 ? '-' : ''}${Math.abs((profitToday / profit.principalToday) * 100).toFixed(2)}%`
             : '';
 
         const latestNavDateStr = isString(f.jzrq) ? f.jzrq : '';
@@ -1679,20 +1789,30 @@ export default function HomePage() {
           yesterdayProfitVal == null
             ? ''
             : `${yesterdayProfitVal > 0 ? '+' : yesterdayProfitVal < 0 ? '-' : ''}${Math.abs(yesterdayProfitVal).toFixed(2)}`;
+        const dailyBaseCostAmount =
+          matchedDaily && matchedDaily.baseCostAmount != null && matchedDaily.baseCostAmount !== '' && Number.isFinite(Number(matchedDaily.baseCostAmount))
+            ? Number(matchedDaily.baseCostAmount)
+            : null;
+        const derivedRateFromSnapshot =
+          yesterdayProfitVal != null && dailyBaseCostAmount != null && dailyBaseCostAmount > 0
+            ? (yesterdayProfitVal / dailyBaseCostAmount) * 100
+            : null;
         const dailyRate =
           matchedDaily && matchedDaily.rate != null && matchedDaily.rate !== '' && Number.isFinite(Number(matchedDaily.rate))
             ? Number(matchedDaily.rate)
-            : null;
+            : derivedRateFromSnapshot;
         const yesterdayProfitPercentLine =
-          yesterdayProfitVal != null && principal > 0
-            ? `${yesterdayProfitVal > 0 ? '+' : yesterdayProfitVal < 0 ? '-' : ''}${Math.abs((yesterdayProfitVal / principal) * 100).toFixed(2)}%`
-            : (dailyRate != null
-              ? `${dailyRate > 0 ? '+' : ''}${dailyRate.toFixed(2)}%`
+          dailyRate != null
+            ? `${dailyRate > 0 ? '+' : dailyRate < 0 ? '-' : ''}${Math.abs(dailyRate).toFixed(2)}%`
+            : (yesterdayProfitVal != null && principal > 0
+              ? `${yesterdayProfitVal > 0 ? '+' : yesterdayProfitVal < 0 ? '-' : ''}${Math.abs((yesterdayProfitVal / principal) * 100).toFixed(2)}%`
               : '');
         const yesterdaySecondLinePctValue =
-          yesterdayProfitVal != null && principal > 0
-            ? (yesterdayProfitVal / principal) * 100
-            : dailyRate;
+          dailyRate != null
+            ? dailyRate
+            : (yesterdayProfitVal != null && principal > 0
+              ? (yesterdayProfitVal / principal) * 100
+              : null);
 
         const holdingProfit =
           total == null
@@ -4150,28 +4270,30 @@ export default function HomePage() {
       const addDays = (dateStr, days) => dayjs.tz(dateStr, TZ).add(days, 'day').format('YYYY-MM-DD');
       const subDays = (dateStr, days) => dayjs.tz(dateStr, TZ).subtract(days, 'day').format('YYYY-MM-DD');
       const calcEarningsFromNavs = (nav, prevNav, share) => (nav - prevNav) * share;
-      const calcRateFromNavs = (nav, prevNav, cost) => {
-        if (!Number.isFinite(nav) || !Number.isFinite(prevNav) || !Number.isFinite(cost) || cost <= 0) return null;
-        return ((nav - prevNav) / cost) * 100;
+      const calcRateFromEarnings = (earnings, baseCostAmount) => {
+        if (!Number.isFinite(earnings) || !Number.isFinite(baseCostAmount) || baseCostAmount <= 0) return null;
+        return (earnings / baseCostAmount) * 100;
       };
 
-      const calcLatestDayFromFund = (u, share, cost) => {
+      const calcLatestDayFromFund = (u, share, baseCostAmount) => {
         const nav = Number(u?.dwjz);
         if (!Number.isFinite(nav) || nav <= 0) return null;
         const lastNav = u?.lastNav != null && u.lastNav !== '' ? Number(u.lastNav) : null;
         if (lastNav != null && Number.isFinite(lastNav) && lastNav > 0) {
+          const earnings = calcEarningsFromNavs(nav, lastNav, share);
           return {
-            earnings: calcEarningsFromNavs(nav, lastNav, share),
-            rate: calcRateFromNavs(nav, lastNav, cost),
+            earnings,
+            rate: calcRateFromEarnings(earnings, baseCostAmount),
           };
         }
         const zzl = u?.zzl != null && u.zzl !== '' ? Number(u.zzl) : Number.NaN;
         if (Number.isFinite(zzl)) {
           const prev = nav / (1 + zzl / 100);
           if (Number.isFinite(prev) && prev > 0) {
+            const earnings = calcEarningsFromNavs(nav, prev, share);
             return {
-              earnings: calcEarningsFromNavs(nav, prev, share),
-              rate: calcRateFromNavs(nav, prev, cost),
+              earnings,
+              rate: calcRateFromEarnings(earnings, baseCostAmount),
             };
           }
         }
@@ -4212,15 +4334,31 @@ export default function HomePage() {
         return null;
       };
 
-      const localRecordToChanges = (scope, code, earnings, dateStr, rate) => {
+      const localRecordToChanges = (scope, code, earnings, dateStr, rate, baseCostAmount, force = false) => {
         if (!dailyChanges[scope]) dailyChanges[scope] = {};
         const list = dailyChanges[scope][code] ||
                      (fundDailyEarnings[scope] && Array.isArray(fundDailyEarnings[scope][code]) ? fundDailyEarnings[scope][code] : []);
         const existingIndex = list.findIndex(item => item.date === dateStr);
         const normalizedRate = isNumber(rate) && Number.isFinite(rate) ? rate : null;
+        const normalizedBaseCostAmount = Number.isFinite(Number(baseCostAmount)) && Number(baseCostAmount) > 0
+          ? Number(baseCostAmount)
+          : null;
         const nextList = existingIndex >= 0
-          ? list.map((item, i) => i === existingIndex ? { date: dateStr, earnings, rate: normalizedRate } : item)
-          : [...list, { date: dateStr, earnings, rate: normalizedRate }];
+          ? list.map((item, i) => {
+            if (i !== existingIndex) return item;
+            const prevRate = Number(item?.rate);
+            const prevBaseCostAmount = Number(item?.baseCostAmount);
+            // 如果是强制更新（确权阶段），或者原本数据缺失，则更新 rate 和 baseCostAmount
+            const shouldUpdateRate = force || !Number.isFinite(prevRate);
+            const shouldUpdateBase = force || !(Number.isFinite(prevBaseCostAmount) && prevBaseCostAmount > 0);
+            return {
+              date: dateStr,
+              earnings,
+              rate: shouldUpdateRate ? normalizedRate : prevRate,
+              baseCostAmount: shouldUpdateBase ? normalizedBaseCostAmount : prevBaseCostAmount,
+            };
+          })
+          : [...list, { date: dateStr, earnings, rate: normalizedRate, baseCostAmount: normalizedBaseCostAmount }];
         nextList.sort((a, b) => a.date.localeCompare(b.date));
         dailyChanges[scope][code] = nextList;
         earningsChanged = true;
@@ -4316,10 +4454,12 @@ export default function HomePage() {
 
             if (!existing.length) {
               const share = getEffectiveShare(latestNavDate);
+              const unitCost = Number(h?.cost);
+              const baseCostAmount = Number.isFinite(unitCost) && unitCost > 0 ? unitCost * share : null;
               if (share > 0) {
-                const v = calcLatestDayFromFund(data, share, h.cost);
+                const v = calcLatestDayFromFund(data, share, baseCostAmount);
                 if (v && Number.isFinite(v.earnings) && fundCodeStillInStorage(data.code)) {
-                  localRecordToChanges(scope, data.code, v.earnings, latestNavDate, v.rate);
+                  localRecordToChanges(scope, data.code, v.earnings, latestNavDate, v.rate, baseCostAmount, true);
                 }
               }
               if (!(dailyChanges[scope] && dailyChanges[scope][data.code])) {
@@ -4331,9 +4471,11 @@ export default function HomePage() {
                     const share = getEffectiveShare(latestNavDate);
                     if (fundCodeStillInStorage(data.code) && Number.isFinite(prevNav) && prevNav > 0 && share > 0) {
                       const earnings = calcEarningsFromNavs(nav, prevNav, share);
-                      const rate = calcRateFromNavs(nav, prevNav, h.cost);
+                      const unitCost = Number(h?.cost);
+                      const baseCostAmount = Number.isFinite(unitCost) && unitCost > 0 ? unitCost * share : null;
+                      const rate = calcRateFromEarnings(earnings, baseCostAmount);
                       if (Number.isFinite(earnings)) {
-                        localRecordToChanges(scope, data.code, earnings, latestNavDate, rate);
+                        localRecordToChanges(scope, data.code, earnings, latestNavDate, rate, baseCostAmount, true);
                       }
                     }
                   }
@@ -4359,9 +4501,11 @@ export default function HomePage() {
                     const share = getEffectiveShare(cursor);
                     if (share <= 0) continue;
                     const earnings = calcEarningsFromNavs(nav, prevNav, share);
-                    const rate = calcRateFromNavs(nav, prevNav, h.cost);
+                    const unitCost = Number(h?.cost);
+                    const baseCostAmount = Number.isFinite(unitCost) && unitCost > 0 ? unitCost * share : null;
+                    const rate = calcRateFromEarnings(earnings, baseCostAmount);
                     if (Number.isFinite(earnings)) {
-                      localRecordToChanges(scope, data.code, earnings, cursor, rate);
+                      localRecordToChanges(scope, data.code, earnings, cursor, rate, baseCostAmount, true);
                     }
                   }
                 }
@@ -5636,12 +5780,17 @@ export default function HomePage() {
                 const rate = rateRaw === null || rateRaw === undefined || rateRaw === ''
                   ? null
                   : Number(rateRaw);
+                const baseCostAmountRaw = item?.baseCostAmount;
+                const baseCostAmount = baseCostAmountRaw === null || baseCostAmountRaw === undefined || baseCostAmountRaw === ''
+                  ? null
+                  : Number(baseCostAmountRaw);
                 if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
                 if (!Number.isFinite(earnings)) return null;
                 return {
                   date,
                   earnings,
                   ...(Number.isFinite(rate) ? { rate } : { rate: null }),
+                  ...(Number.isFinite(baseCostAmount) && baseCostAmount > 0 ? { baseCostAmount } : { baseCostAmount: null }),
                 };
               })
               .filter(Boolean)
@@ -5913,12 +6062,17 @@ export default function HomePage() {
               const rate = rateRaw === null || rateRaw === undefined || rateRaw === ''
                 ? null
                 : Number(rateRaw);
+              const baseCostAmountRaw = item?.baseCostAmount;
+              const baseCostAmount = baseCostAmountRaw === null || baseCostAmountRaw === undefined || baseCostAmountRaw === ''
+                ? null
+                : Number(baseCostAmountRaw);
               if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
               if (!Number.isFinite(earnings)) return null;
               return {
                 date,
                 earnings,
                 ...(Number.isFinite(rate) ? { rate } : { rate: null }),
+                ...(Number.isFinite(baseCostAmount) && baseCostAmount > 0 ? { baseCostAmount } : { baseCostAmount: null }),
               };
             })
             .filter(Boolean)
